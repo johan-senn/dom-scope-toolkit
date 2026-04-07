@@ -1,7 +1,10 @@
 const shortcuts = [];
+let isInitialized = false;
 
 export function registerShortcut(shortcut) {
-    if (!shortcut || typeof shortcut.handler !== 'function') {
+    const hasHandler = shortcut && typeof shortcut.handler === 'function';
+
+    if (!shortcut || !hasHandler) {
         console.warn('Raccourci invalide ignoré');
         return;
     }
@@ -10,21 +13,40 @@ export function registerShortcut(shortcut) {
 }
 
 export function initKeyboard() {
-    document.addEventListener('keydown', (event) => {
-        shortcuts.forEach((shortcut) => {
-            if (matchShortcut(event, shortcut)) {
-                event.preventDefault();
-                shortcut.handler(event);
-            }
-        });
+    if (isInitialized) {
+        return;
+    }
+
+    isInitialized = true;
+
+    document.addEventListener('keydown', handleKeydown, true);
+}
+
+function handleKeydown(event) {
+    shortcuts.forEach((shortcut) => {
+        if (!matchShortcut(event, shortcut)) {
+            return;
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+        shortcut.handler(event);
     });
 }
 
 function matchShortcut(event, shortcut) {
+    const expectedKey = typeof shortcut.key === 'string' ? shortcut.key.toLowerCase() : null;
+    const expectedCode = typeof shortcut.code === 'string' ? shortcut.code : null;
+
+    const keyMatches = expectedKey ? (event.key || '').toLowerCase() === expectedKey : true;
+    const codeMatches = expectedCode ? event.code === expectedCode : true;
+
     return (
         (!!shortcut.ctrl === event.ctrlKey) &&
         (!!shortcut.shift === event.shiftKey) &&
         (!!shortcut.alt === event.altKey) &&
-        event.key.toLowerCase() === shortcut.key.toLowerCase()
+        (!!shortcut.meta === event.metaKey) &&
+        keyMatches &&
+        codeMatches
     );
 }

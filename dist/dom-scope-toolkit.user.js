@@ -1,253 +1,362 @@
 // ==UserScript==
 // @name         Dom Scope Toolkit
 // @namespace    https://github.com/johan-senn/dom-scope-toolkit
-// @version      0.1
-// @description  Toolkit d'exploration du DOM
+// @version      0.2
+// @description  Exploration DOM accessible clavier (NodeScope)
 // @author       Johan Senn
 // @match        *://*/*
 // @grant        none
-// @downloadURL  https://raw.githubusercontent.com/johan-senn/dom-scope-toolkit/main/dist/dom-scope-toolkit.user.js
-// @updateURL    https://raw.githubusercontent.com/johan-senn/dom-scope-toolkit/main/dist/dom-scope-toolkit.user.js
 // ==/UserScript==
 
 (function () {
     'use strict';
 
-    // ==============================
-    // Core : registre des modules + état
-    // ==============================
+    if (window.__nodescope_loaded__) {
+        return;
+    }
+    window.__nodescope_loaded__ = true;
+
+    /* ==============================
+       Core : registre des modules
+    ============================== */
 
     const modules = [];
     let isActive = false;
+    let isInitialized = false;
 
     function registerModule(module) {
-        const hasInit = module && typeof module.init === 'function';
-        const hasOnActivate = module && typeof module.onActivate === 'function';
-        const hasOnDeactivate = module && typeof module.onDeactivate === 'function';
-
-        if (!module || (!hasInit && !hasOnActivate && !hasOnDeactivate)) {
-            console.warn('Module invalide ignoré');
-            return;
-        }
-
+        if (!module) return;
         modules.push(module);
     }
 
+    function initModules() {
+        if (isInitialized) return;
+        isInitialized = true;
+
+        modules.forEach((m) => {
+            if (typeof m.init === 'function') {
+                try { m.init(); } catch (e) { console.error(e); }
+            }
+        });
+    }
+
     function activate() {
-        if (isActive) {
-            return;
-        }
-
+        if (isActive) return;
         isActive = true;
-        syncNodeScopeInterface();
-        announce('NodeScope activé');
 
-        modules.forEach((module) => {
-            try {
-                if (typeof module.onActivate === 'function') {
-                    module.onActivate();
-                    return;
-                }
-
-                if (typeof module.init === 'function') {
-                    module.init();
-                }
-            } catch (error) {
-                console.error('Erreur lors de l’activation d’un module :', error);
+        modules.forEach((m) => {
+            if (typeof m.onActivate === 'function') {
+                try { m.onActivate(); } catch (e) { console.error(e); }
             }
         });
     }
 
     function deactivate() {
-        if (!isActive) {
-            return;
-        }
-
+        if (!isActive) return;
         isActive = false;
-        syncNodeScopeInterface();
-        announce('NodeScope désactivé');
 
-        modules.forEach((module) => {
-            try {
-                if (typeof module.onDeactivate === 'function') {
-                    module.onDeactivate();
-                }
-            } catch (error) {
-                console.error('Erreur lors de la désactivation d’un module :', error);
+        modules.forEach((m) => {
+            if (typeof m.onDeactivate === 'function') {
+                try { m.onDeactivate(); } catch (e) { console.error(e); }
             }
         });
-    }
-
-    function toggle() {
-        if (isActive) {
-            deactivate();
-            return;
-        }
-
-        activate();
     }
 
     function getIsActive() {
         return isActive;
     }
 
-    // ==============================
-    // Accessibilité : aria-live
-    // ==============================
+    /* ==============================
+       Service clavier
+    ============================== */
 
-    let liveRegion = null;
+    const shortcuts = [];
 
-    function createLiveRegion() {
-        if (liveRegion) {
-            return;
-        }
-
-        liveRegion = document.createElement('div');
-        liveRegion.setAttribute('aria-live', 'polite');
-        liveRegion.setAttribute('aria-atomic', 'true');
-        applyVisuallyHiddenStyles(liveRegion);
-
-        document.body.appendChild(liveRegion);
+    function registerShortcut(shortcut) {
+        shortcuts.push(shortcut);
     }
 
-    function announce(message) {
-        if (!liveRegion) {
-            return;
-        }
-
-        liveRegion.textContent = '';
-
-        window.setTimeout(() => {
-            liveRegion.textContent = message;
-        }, 50);
+    function initKeyboard() {
+        document.addEventListener('keydown', (event) => {
+            shortcuts.forEach((s) => {
+                if (
+                    (!!s.ctrl === event.ctrlKey) &&
+                    (!!s.shift === event.shiftKey) &&
+                    (!!s.alt === event.altKey) &&
+                    (!!s.meta === event.metaKey) &&
+                    (!s.code || s.code === event.code)
+                ) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    s.handler(event);
+                }
+            });
+        }, true);
     }
 
-    // ==============================
-    // UI : interface NodeScope
-    // ==============================
+    /* ==============================
+       Service état NodeScope
+    ============================== */
 
-    const UI_IDS = {
-        section: 'nodescope-interface',
-        title: 'nodescope-interface-title',
-        switch: 'nodescope-switch',
-        switchLabel: 'nodescope-switch-label',
-        switchHint: 'nodescope-switch-hint'
-    };
+    let entryNode = null;
+    let currentNode = null;
+    const listeners = new Set();
 
-    let interfaceSection = null;
-    let switchControl = null;
-    let switchVisibleLabel = null;
-    let switchDescription = null;
+    function isHtmlElement(node) {
+        return node instanceof HTMLElement;
+    }
 
-    function createNodeScopeInterface() {
-        const existingSection = document.getElementById(UI_IDS.section);
+    function notify() {
+        const snapshot = getState();
 
-        if (existingSection) {
-            interfaceSection = existingSection;
-            switchControl = document.getElementById(UI_IDS.switch);
-            switchVisibleLabel = document.getElementById(UI_IDS.switchLabel);
-            switchDescription = document.getElementById(UI_IDS.switchHint);
-            syncNodeScopeInterface();
-            return;
-        }
-
-        interfaceSection = document.createElement('section');
-        interfaceSection.id = UI_IDS.section;
-        interfaceSection.setAttribute('aria-labelledby', UI_IDS.title);
-
-        const title = document.createElement('h1');
-        title.id = UI_IDS.title;
-        title.textContent = 'Interface NodeScope';
-
-        switchControl = document.createElement('button');
-        switchControl.id = UI_IDS.switch;
-        switchControl.type = 'button';
-        switchControl.setAttribute('role', 'switch');
-        switchControl.setAttribute('aria-labelledby', UI_IDS.switchLabel);
-        switchControl.setAttribute('aria-describedby', UI_IDS.switchHint);
-
-        switchVisibleLabel = document.createElement('span');
-        switchVisibleLabel.id = UI_IDS.switchLabel;
-
-        switchDescription = document.createElement('span');
-        switchDescription.id = UI_IDS.switchHint;
-        applyVisuallyHiddenStyles(switchDescription);
-
-        switchControl.appendChild(switchVisibleLabel);
-
-        switchControl.addEventListener('click', () => {
-            toggle();
-            switchControl.focus();
+        listeners.forEach((l) => {
+            try { l(snapshot); } catch (e) { console.error(e); }
         });
-
-        interfaceSection.appendChild(title);
-        interfaceSection.appendChild(switchControl);
-        document.body.appendChild(interfaceSection);
-
-        syncNodeScopeInterface();
     }
 
-    function syncNodeScopeInterface() {
-        if (!switchControl || !switchVisibleLabel || !switchDescription) {
-            return;
-        }
+    function describe(el) {
+        if (!isHtmlElement(el)) return 'aucun';
 
+        const tag = el.tagName.toLowerCase();
+        const id = el.id ? `#${el.id}` : '';
+        const cls = el.classList.length ? '.' + [...el.classList].join('.') : '';
+
+        return `${tag}${id}${cls}`;
+    }
+
+    function truncate(text, max) {
+        if (!text || text.length <= max) return text;
+        return text.slice(0, max - 1) + '…';
+    }
+
+    function getSpeech() {
+        if (!isHtmlElement(currentNode)) return 'aucun nœud courant';
+
+        const tag = currentNode.tagName.toLowerCase();
+        const text = (currentNode.innerText || '').trim();
+
+        return `balise ${tag}${text ? ', texte ' + truncate(text, 60) : ''}`;
+    }
+
+    function getState() {
+        return {
+            entryNode,
+            currentNode,
+            entryDescription: describe(entryNode),
+            currentDescription: describe(currentNode)
+        };
+    }
+
+    function subscribe(listener) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+    }
+
+    function resetState() {
+        entryNode = null;
+        currentNode = null;
+        notify();
+    }
+
+    function initFromFocus() {
+        const el = document.activeElement;
+        if (!isHtmlElement(el)) return false;
+
+        entryNode = el;
+        currentNode = el;
+        notify();
+        return true;
+    }
+
+    function moveParent() {
+        if (!isHtmlElement(currentNode)) return false;
+        const p = currentNode.parentElement;
+        if (!isHtmlElement(p)) return false;
+        currentNode = p;
+        notify();
+        return true;
+    }
+
+    function moveChild() {
+        if (!isHtmlElement(currentNode)) return false;
+        const c = currentNode.firstElementChild;
+        if (!isHtmlElement(c)) return false;
+        currentNode = c;
+        notify();
+        return true;
+    }
+
+    function movePrev() {
+        if (!isHtmlElement(currentNode)) return false;
+        const s = currentNode.previousElementSibling;
+        if (!isHtmlElement(s)) return false;
+        currentNode = s;
+        notify();
+        return true;
+    }
+
+    function moveNext() {
+        if (!isHtmlElement(currentNode)) return false;
+        const s = currentNode.nextElementSibling;
+        if (!isHtmlElement(s)) return false;
+        currentNode = s;
+        notify();
+        return true;
+    }
+
+    /* ==============================
+       UI NodeScope
+    ============================== */
+
+    let live = null;
+    let switchBtn, label, hint, status, entryBtn, navBtns = [];
+
+    function vh(el) {
+        el.style.position = 'absolute';
+        el.style.width = '1px';
+        el.style.height = '1px';
+        el.style.margin = '-1px';
+        el.style.overflow = 'hidden';
+    }
+
+    function announce(msg) {
+        if (!live) return;
+        live.textContent = '';
+        setTimeout(() => live.textContent = msg, 30);
+    }
+
+    function sync() {
         const active = getIsActive();
 
-        switchControl.setAttribute('aria-checked', active ? 'true' : 'false');
+        switchBtn.setAttribute('aria-checked', active ? 'true' : 'false');
 
-        if (active) {
-            switchVisibleLabel.textContent = 'NodeScope activé';
-            switchDescription.textContent = 'Appuyez sur Espace pour désactiver';
-        } else {
-            switchVisibleLabel.textContent = 'NodeScope désactivé';
-            switchDescription.textContent = 'Appuyez sur Espace pour activer';
-        }
+        hint.textContent = active
+            ? 'Appuyez sur Espace pour désactiver'
+            : 'Appuyez sur Espace pour activer';
+
+        status.textContent = [
+            `État : ${active ? 'activé' : 'désactivé'}`,
+            `Entrée : ${describe(entryNode)}`,
+            `Courant : ${describe(currentNode)}`
+        ].join('\n');
+
+        entryBtn.disabled = !active;
+        navBtns.forEach(b => b.disabled = !active);
     }
 
-    function applyVisuallyHiddenStyles(element) {
-        element.style.position = 'absolute';
-        element.style.width = '1px';
-        element.style.height = '1px';
-        element.style.margin = '-1px';
-        element.style.border = '0';
-        element.style.padding = '0';
-        element.style.overflow = 'hidden';
-        element.style.clip = 'rect(0 0 0 0)';
-        element.style.whiteSpace = 'nowrap';
-    }
-
-    // ==============================
-    // Module : alert-test neutralisé
-    // ==============================
-
-    const alertTestModule = {
-        name: 'alert-test',
-
-        onActivate() {
-            // Module neutralisé pour éviter l'alert durant la phase UI.
-        },
-
-        onDeactivate() {
-            // Rien ici pour l’instant.
-        }
-    };
-
-    // ==============================
-    // Bootstrap
-    // ==============================
-
-    function init() {
-        if (!document.body) {
-            window.setTimeout(init, 50);
+    function move(fn, ok, ko) {
+        if (!getIsActive()) {
+            announce('NodeScope désactivé');
             return;
         }
 
-        createLiveRegion();
-        createNodeScopeInterface();
-        registerModule(alertTestModule);
+        if (!fn()) {
+            announce(ko);
+            return;
+        }
+
+        announce(`${ok} : ${getSpeech()}`);
+    }
+
+    function buildUI() {
+        live = document.createElement('div');
+        live.setAttribute('aria-live', 'polite');
+        vh(live);
+        document.body.appendChild(live);
+
+        const section = document.createElement('section');
+        section.setAttribute('aria-labelledby', 'ns-title');
+
+        const title = document.createElement('h1');
+        title.id = 'ns-title';
+        title.textContent = 'Interface NodeScope';
+
+        switchBtn = document.createElement('button');
+        switchBtn.setAttribute('role', 'switch');
+        switchBtn.setAttribute('aria-checked', 'false');
+
+        label = document.createElement('span');
+        label.textContent = 'NodeScope';
+
+        hint = document.createElement('span');
+        vh(hint);
+
+        switchBtn.appendChild(label);
+        switchBtn.addEventListener('click', () => {
+            getIsActive() ? deactivate() : activate();
+        });
+
+        status = document.createElement('pre');
+
+        entryBtn = document.createElement('button');
+        entryBtn.textContent = 'Définir point d’entrée';
+        entryBtn.onclick = () => {
+            if (initFromFocus()) {
+                announce('Point d’entrée défini');
+            } else {
+                announce('Impossible');
+            }
+        };
+
+        function nav(label, fn, ok, ko) {
+            const b = document.createElement('button');
+            b.textContent = label;
+            b.onclick = () => move(fn, ok, ko);
+            navBtns.push(b);
+            return b;
+        }
+
+        section.append(
+            title,
+            switchBtn,
+            hint,
+            status,
+            entryBtn,
+            nav('Parent', moveParent, 'Parent', 'Aucun parent'),
+            nav('Enfant', moveChild, 'Enfant', 'Aucun enfant'),
+            nav('Précédent', movePrev, 'Précédent', 'Aucun précédent'),
+            nav('Suivant', moveNext, 'Suivant', 'Aucun suivant')
+        );
+
+        document.body.appendChild(section);
+
+        subscribe(sync);
+        sync();
+    }
+
+    const uiModule = {
+        init() {
+            buildUI();
+        },
+        onActivate() {
+            if (!currentNode) initFromFocus();
+            sync();
+            announce('NodeScope activé');
+        },
+        onDeactivate() {
+            resetState();
+            sync();
+            announce('NodeScope désactivé');
+        }
+    };
+
+    /* ==============================
+       Bootstrap
+    ============================== */
+
+    function init() {
+        registerModule(uiModule);
+        initModules();
+
+        registerShortcut({
+            ctrl: true,
+            shift: true,
+            code: 'Numpad0',
+            handler: () => switchBtn.click()
+        });
+
+        initKeyboard();
     }
 
     init();
-
 })();

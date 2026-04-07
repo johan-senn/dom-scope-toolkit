@@ -1,5 +1,6 @@
 const modules = [];
 let isActive = false;
+let isInitialized = false;
 
 export function registerModule(module) {
     const hasInit = module && typeof module.init === 'function';
@@ -15,7 +16,21 @@ export function registerModule(module) {
 }
 
 export function initModules() {
-    activate();
+    if (isInitialized) {
+        return;
+    }
+
+    isInitialized = true;
+
+    modules.forEach((module) => {
+        try {
+            if (typeof module.init === 'function') {
+                module.init();
+            }
+        } catch (error) {
+            console.error('Erreur lors de l’initialisation d’un module :', error);
+        }
+    });
 }
 
 export function activate() {
@@ -29,11 +44,6 @@ export function activate() {
         try {
             if (typeof module.onActivate === 'function') {
                 module.onActivate();
-                return;
-            }
-
-            if (typeof module.init === 'function') {
-                module.init();
             }
         } catch (error) {
             console.error('Erreur lors de l’activation d’un module :', error);

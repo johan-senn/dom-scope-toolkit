@@ -1,25 +1,35 @@
-import { registerModule, toggle } from '../core/module-registry.js';
+import { initModules, registerModule } from '../core/module-registry.js';
+import { registerShortcut, initKeyboard } from '../services/keyboard-service.js';
 import { alertTestModule } from '../modules/alert-test/index.js';
+import { nodeScopeUiModule, triggerNodeScopeSwitch } from '../modules/nodescope-ui/index.js';
 
 (function () {
     'use strict';
 
-    registerModule(alertTestModule);
+    function init() {
+        if (!document.body) {
+            window.setTimeout(init, 50);
+            return;
+        }
 
-    document.addEventListener('keydown', (event) => {
+        registerModule(nodeScopeUiModule);
+        registerModule(alertTestModule);
 
-        console.log('DEBUG KEY:', {
-            key: event.key,
-            code: event.code,
-            ctrl: event.ctrlKey,
-            shift: event.shiftKey,
-            alt: event.altKey
+        initModules();
+
+        registerShortcut({
+            ctrl: true,
+            shift: true,
+            alt: false,
+            meta: false,
+            code: 'Numpad0',
+            handler: () => {
+                triggerNodeScopeSwitch();
+            }
         });
 
-        if (event.ctrlKey && event.shiftKey && event.code === 'Numpad0') {
-            event.preventDefault();
-            console.log('NodeScope toggle déclenché');
-            toggle();
-        }
-    });
+        initKeyboard();
+    }
+
+    init();
 })();
