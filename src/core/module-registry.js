@@ -1,7 +1,12 @@
 const modules = [];
+let isActive = false;
 
 export function registerModule(module) {
-    if (!module || typeof module.init !== 'function') {
+    const hasInit = module && typeof module.init === 'function';
+    const hasOnActivate = module && typeof module.onActivate === 'function';
+    const hasOnDeactivate = module && typeof module.onDeactivate === 'function';
+
+    if (!module || (!hasInit && !hasOnActivate && !hasOnDeactivate)) {
         console.warn('Module invalide ignoré');
         return;
     }
@@ -10,11 +15,59 @@ export function registerModule(module) {
 }
 
 export function initModules() {
+    activate();
+}
+
+export function activate() {
+    if (isActive) {
+        return;
+    }
+
+    isActive = true;
+
     modules.forEach((module) => {
         try {
-            module.init();
+            if (typeof module.onActivate === 'function') {
+                module.onActivate();
+                return;
+            }
+
+            if (typeof module.init === 'function') {
+                module.init();
+            }
         } catch (error) {
-            console.error('Erreur lors de l’exécution d’un module :', error);
+            console.error('Erreur lors de l’activation d’un module :', error);
         }
     });
+}
+
+export function deactivate() {
+    if (!isActive) {
+        return;
+    }
+
+    isActive = false;
+
+    modules.forEach((module) => {
+        try {
+            if (typeof module.onDeactivate === 'function') {
+                module.onDeactivate();
+            }
+        } catch (error) {
+            console.error('Erreur lors de la désactivation d’un module :', error);
+        }
+    });
+}
+
+export function toggle() {
+    if (isActive) {
+        deactivate();
+        return;
+    }
+
+    activate();
+}
+
+export function getIsActive() {
+    return isActive;
 }

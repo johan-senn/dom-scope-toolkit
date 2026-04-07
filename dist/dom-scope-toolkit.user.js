@@ -14,13 +14,54 @@
     'use strict';
 
     // ==============================
-    // Core : module registry
+    // Accessibilité : aria-live
+    // ==============================
+
+    let liveRegion = null;
+
+    function createLiveRegion() {
+        liveRegion = document.createElement('div');
+
+        liveRegion.setAttribute('aria-live', 'polite');
+        liveRegion.setAttribute('aria-atomic', 'true');
+
+        // Masqué visuellement mais lisible par lecteur d’écran
+        liveRegion.style.position = 'absolute';
+        liveRegion.style.width = '1px';
+        liveRegion.style.height = '1px';
+        liveRegion.style.margin = '-1px';
+        liveRegion.style.border = '0';
+        liveRegion.style.padding = '0';
+        liveRegion.style.overflow = 'hidden';
+        liveRegion.style.clip = 'rect(0 0 0 0)';
+        liveRegion.style.whiteSpace = 'nowrap';
+
+        document.body.appendChild(liveRegion);
+    }
+
+    function announce(message) {
+        if (!liveRegion) return;
+
+        // reset pour forcer l’annonce
+        liveRegion.textContent = '';
+        setTimeout(() => {
+            liveRegion.textContent = message;
+        }, 50);
+    }
+
+    // ==============================
+    // Core : modules + état
     // ==============================
 
     const modules = [];
+    let isActive = false;
 
     function registerModule(module) {
-        if (!module || typeof module.init !== 'function') {
+        const hasInit = module && typeof module.init === 'function';
+        const hasOnActivate = module && typeof module.onActivate === 'function';
+        const hasOnDeactivate = module && typeof module.onDeactivate === 'function';
+
+        if (!module || (!hasInit && !hasOnActivate && !hasOnDeactivate)) {
             console.warn('Module invalide ignoré');
             return;
         }
@@ -28,25 +69,68 @@
         modules.push(module);
     }
 
-    function initModules() {
+    function activate() {
+        if (isActive) return;
+
+        isActive = true;
+
+        announce('NodeScope activé');
+
         modules.forEach((module) => {
             try {
-                module.init();
+                if (typeof module.onActivate === 'function') {
+                    module.onActivate();
+                    return;
+                }
+
+                if (typeof module.init === 'function') {
+                    module.init();
+                }
             } catch (error) {
-                console.error('Erreur module :', module.name, error);
+                console.error('Erreur activation module :', module.name, error);
             }
         });
     }
 
+    function deactivate() {
+        if (!isActive) return;
+
+        isActive = false;
+
+        announce('NodeScope désactivé');
+
+        modules.forEach((module) => {
+            try {
+                if (typeof module.onDeactivate === 'function') {
+                    module.onDeactivate();
+                }
+            } catch (error) {
+                console.error('Erreur désactivation module :', module.name, error);
+            }
+        });
+    }
+
+    function toggle() {
+        if (isActive) {
+            deactivate();
+        } else {
+            activate();
+        }
+    }
+
     // ==============================
-    // Module : alert-test
+    // Module : alert-test (désactivé visuellement)
     // ==============================
 
     const alertTestModule = {
         name: 'alert-test',
 
-        init() {
-            alert('Dom Scope Toolkit actif');
+        onActivate() {
+            // plus d'alert → remplacé par aria-live
+        },
+
+        onDeactivate() {
+            // rien ici
         }
     };
 
@@ -54,7 +138,15 @@
     // Bootstrap
     // ==============================
 
+    createLiveRegion();
+
     registerModule(alertTestModule);
-    initModules();
+
+    document.addEventListener('keydown', (event) => {
+        if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'n') {
+            event.preventDefault();
+            toggle();
+        }
+    });
 
 })();

@@ -1,7 +1,11 @@
 export const alertTestModule = {
     name: 'alert-test',
 
-    init() {
-        alert('Dom Scope Toolkit actif');
+    onActivate() {
+        alert('NodeScope activé');
+    },
+
+    onDeactivate() {
+        console.log('NodeScope désactivé');
     }
 };

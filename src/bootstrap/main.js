@@ -1,4 +1,4 @@
-import { registerModule, initModules } from '../core/module-registry.js';
+import { registerModule, toggle } from '../core/module-registry.js';
 import { alertTestModule } from '../modules/alert-test/index.js';
 
 (function () {
@@ -6,5 +6,10 @@ import { alertTestModule } from '../modules/alert-test/index.js';
 
     registerModule(alertTestModule);
 
-    initModules();
+    document.addEventListener('keydown', (event) => {
+        if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'n') {
+            event.preventDefault();
+            toggle();
+        }
+    });
 })();
