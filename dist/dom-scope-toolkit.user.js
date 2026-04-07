@@ -143,7 +143,7 @@
     registerModule(alertTestModule);
 
     document.addEventListener('keydown', (event) => {
-        if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'n') {
+        if (event.ctrlKey && event.shiftKey && event.code === 'Numpad0') {
             event.preventDefault();
             toggle();
         }
