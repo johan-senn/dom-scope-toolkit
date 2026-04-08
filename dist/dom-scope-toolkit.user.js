@@ -25,39 +25,63 @@
     let isInitialized = false;
 
     function registerModule(module) {
-        if (!module) return;
+        if (!module) {
+            return;
+        }
+
         modules.push(module);
     }
 
     function initModules() {
-        if (isInitialized) return;
+        if (isInitialized) {
+            return;
+        }
+
         isInitialized = true;
 
-        modules.forEach((m) => {
-            if (typeof m.init === 'function') {
-                try { m.init(); } catch (e) { console.error(e); }
+        modules.forEach((module) => {
+            if (typeof module.init === 'function') {
+                try {
+                    module.init();
+                } catch (error) {
+                    console.error(error);
+                }
             }
         });
     }
 
     function activate() {
-        if (isActive) return;
+        if (isActive) {
+            return;
+        }
+
         isActive = true;
 
-        modules.forEach((m) => {
-            if (typeof m.onActivate === 'function') {
-                try { m.onActivate(); } catch (e) { console.error(e); }
+        modules.forEach((module) => {
+            if (typeof module.onActivate === 'function') {
+                try {
+                    module.onActivate();
+                } catch (error) {
+                    console.error(error);
+                }
             }
         });
     }
 
     function deactivate() {
-        if (!isActive) return;
+        if (!isActive) {
+            return;
+        }
+
         isActive = false;
 
-        modules.forEach((m) => {
-            if (typeof m.onDeactivate === 'function') {
-                try { m.onDeactivate(); } catch (e) { console.error(e); }
+        modules.forEach((module) => {
+            if (typeof module.onDeactivate === 'function') {
+                try {
+                    module.onDeactivate();
+                } catch (error) {
+                    console.error(error);
+                }
             }
         });
     }
@@ -71,27 +95,65 @@
     ============================== */
 
     const shortcuts = [];
+    let keyboardInitialized = false;
 
     function registerShortcut(shortcut) {
+        const hasHandler = shortcut && typeof shortcut.handler === 'function';
+
+        if (!shortcut || !hasHandler) {
+            console.warn('Raccourci invalide ignoré');
+            return;
+        }
+
         shortcuts.push(shortcut);
     }
 
     function initKeyboard() {
-        document.addEventListener('keydown', (event) => {
-            shortcuts.forEach((s) => {
-                if (
-                    (!!s.ctrl === event.ctrlKey) &&
-                    (!!s.shift === event.shiftKey) &&
-                    (!!s.alt === event.altKey) &&
-                    (!!s.meta === event.metaKey) &&
-                    (!s.code || s.code === event.code)
-                ) {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    s.handler(event);
-                }
-            });
-        }, true);
+        if (keyboardInitialized) {
+            return;
+        }
+
+        keyboardInitialized = true;
+        document.addEventListener('keydown', handleKeydown, true);
+    }
+
+    function handleKeydown(event) {
+        shortcuts.forEach((shortcut) => {
+            if (!matchShortcut(event, shortcut)) {
+                return;
+            }
+
+            event.preventDefault();
+            event.stopPropagation();
+            shortcut.handler(event);
+        });
+    }
+
+    function matchShortcut(event, shortcut) {
+        const expectedKey = typeof shortcut.key === 'string'
+            ? shortcut.key.toLowerCase()
+            : null;
+
+        const expectedCode = typeof shortcut.code === 'string'
+            ? shortcut.code
+            : null;
+
+        const keyMatches = expectedKey
+            ? (event.key || '').toLowerCase() === expectedKey
+            : true;
+
+        const codeMatches = expectedCode
+            ? event.code === expectedCode
+            : true;
+
+        return (
+            (!!shortcut.ctrl === event.ctrlKey) &&
+            (!!shortcut.shift === event.shiftKey) &&
+            (!!shortcut.alt === event.altKey) &&
+            (!!shortcut.meta === event.metaKey) &&
+            keyMatches &&
+            codeMatches
+        );
     }
 
     /* ==============================
@@ -100,107 +162,156 @@
 
     let entryNode = null;
     let currentNode = null;
-    const listeners = new Set();
+    const stateListeners = new Set();
 
     function isHtmlElement(node) {
         return node instanceof HTMLElement;
     }
 
-    function notify() {
-        const snapshot = getState();
+    function notifyStateChange() {
+        const snapshot = getNodeScopeState();
 
-        listeners.forEach((l) => {
-            try { l(snapshot); } catch (e) { console.error(e); }
+        stateListeners.forEach((listener) => {
+            try {
+                listener(snapshot);
+            } catch (error) {
+                console.error(error);
+            }
         });
     }
 
-    function describe(el) {
-        if (!isHtmlElement(el)) return 'aucun';
+    function describeNode(element) {
+        if (!isHtmlElement(element)) {
+            return 'aucun';
+        }
 
-        const tag = el.tagName.toLowerCase();
-        const id = el.id ? `#${el.id}` : '';
-        const cls = el.classList.length ? '.' + [...el.classList].join('.') : '';
+        const tag = element.tagName.toLowerCase();
+        const id = element.id ? `#${element.id}` : '';
+        const classes = element.classList.length
+            ? '.' + Array.from(element.classList).join('.')
+            : '';
 
-        return `${tag}${id}${cls}`;
+        return `${tag}${id}${classes}`;
     }
 
-    function truncate(text, max) {
-        if (!text || text.length <= max) return text;
-        return text.slice(0, max - 1) + '…';
+    function truncateText(text, maxLength) {
+        if (!text || text.length <= maxLength) {
+            return text;
+        }
+
+        return text.slice(0, maxLength - 1) + '…';
     }
 
-    function getSpeech() {
-        if (!isHtmlElement(currentNode)) return 'aucun nœud courant';
+    function getCurrentNodeSpeechText() {
+        if (!isHtmlElement(currentNode)) {
+            return 'aucun nœud courant';
+        }
 
         const tag = currentNode.tagName.toLowerCase();
         const text = (currentNode.innerText || '').trim();
 
-        return `balise ${tag}${text ? ', texte ' + truncate(text, 60) : ''}`;
+        return `balise ${tag}${text ? ', texte ' + truncateText(text, 60) : ''}`;
     }
 
-    function getState() {
+    function getNodeScopeState() {
         return {
             entryNode,
             currentNode,
-            entryDescription: describe(entryNode),
-            currentDescription: describe(currentNode)
+            entryDescription: describeNode(entryNode),
+            currentDescription: describeNode(currentNode)
         };
     }
 
-    function subscribe(listener) {
-        listeners.add(listener);
-        return () => listeners.delete(listener);
+    function subscribeNodeScopeState(listener) {
+        stateListeners.add(listener);
+        return () => stateListeners.delete(listener);
     }
 
-    function resetState() {
+    function resetNodeScopeState() {
         entryNode = null;
         currentNode = null;
-        notify();
+        notifyStateChange();
     }
 
-    function initFromFocus() {
-        const el = document.activeElement;
-        if (!isHtmlElement(el)) return false;
+    function initializeNodeScopeFromFocus() {
+        const focusedElement = document.activeElement;
 
-        entryNode = el;
-        currentNode = el;
-        notify();
+        if (!isHtmlElement(focusedElement)) {
+            return false;
+        }
+
+        entryNode = focusedElement;
+        currentNode = focusedElement;
+        notifyStateChange();
+
         return true;
     }
 
-    function moveParent() {
-        if (!isHtmlElement(currentNode)) return false;
-        const p = currentNode.parentElement;
-        if (!isHtmlElement(p)) return false;
-        currentNode = p;
-        notify();
+    function moveToParent() {
+        if (!isHtmlElement(currentNode)) {
+            return false;
+        }
+
+        const parent = currentNode.parentElement;
+
+        if (!isHtmlElement(parent)) {
+            return false;
+        }
+
+        currentNode = parent;
+        notifyStateChange();
+
         return true;
     }
 
-    function moveChild() {
-        if (!isHtmlElement(currentNode)) return false;
-        const c = currentNode.firstElementChild;
-        if (!isHtmlElement(c)) return false;
-        currentNode = c;
-        notify();
+    function moveToFirstChild() {
+        if (!isHtmlElement(currentNode)) {
+            return false;
+        }
+
+        const child = currentNode.firstElementChild;
+
+        if (!isHtmlElement(child)) {
+            return false;
+        }
+
+        currentNode = child;
+        notifyStateChange();
+
         return true;
     }
 
-    function movePrev() {
-        if (!isHtmlElement(currentNode)) return false;
-        const s = currentNode.previousElementSibling;
-        if (!isHtmlElement(s)) return false;
-        currentNode = s;
-        notify();
+    function moveToPreviousSibling() {
+        if (!isHtmlElement(currentNode)) {
+            return false;
+        }
+
+        const sibling = currentNode.previousElementSibling;
+
+        if (!isHtmlElement(sibling)) {
+            return false;
+        }
+
+        currentNode = sibling;
+        notifyStateChange();
+
         return true;
     }
 
-    function moveNext() {
-        if (!isHtmlElement(currentNode)) return false;
-        const s = currentNode.nextElementSibling;
-        if (!isHtmlElement(s)) return false;
-        currentNode = s;
-        notify();
+    function moveToNextSibling() {
+        if (!isHtmlElement(currentNode)) {
+            return false;
+        }
+
+        const sibling = currentNode.nextElementSibling;
+
+        if (!isHtmlElement(sibling)) {
+            return false;
+        }
+
+        currentNode = sibling;
+        notifyStateChange();
+
         return true;
     }
 
@@ -208,134 +319,299 @@
        UI NodeScope
     ============================== */
 
-    let live = null;
-    let switchBtn, label, hint, status, entryBtn, navBtns = [];
+    const UI_IDS = {
+        liveRegion: 'nodescope-live-region',
+        section: 'nodescope-interface',
+        title: 'nodescope-interface-title',
+        switch: 'nodescope-switch',
+        switchLabel: 'nodescope-switch-label',
+        switchHint: 'nodescope-switch-hint',
+        status: 'nodescope-status',
+        setEntryButton: 'nodescope-set-entry-button',
+        navGroup: 'nodescope-nav-group'
+    };
 
-    function vh(el) {
-        el.style.position = 'absolute';
-        el.style.width = '1px';
-        el.style.height = '1px';
-        el.style.margin = '-1px';
-        el.style.overflow = 'hidden';
+    let liveRegion = null;
+    let switchControl = null;
+    let switchVisibleLabel = null;
+    let switchDescription = null;
+    let statusBlock = null;
+    let setEntryButton = null;
+    let navButtons = [];
+    let unsubscribeState = null;
+
+    function applyVisuallyHiddenStyles(element) {
+        element.style.position = 'absolute';
+        element.style.width = '1px';
+        element.style.height = '1px';
+        element.style.margin = '-1px';
+        element.style.border = '0';
+        element.style.padding = '0';
+        element.style.overflow = 'hidden';
+        element.style.clip = 'rect(0 0 0 0)';
+        element.style.whiteSpace = 'nowrap';
     }
 
-    function announce(msg) {
-        if (!live) return;
-        live.textContent = '';
-        setTimeout(() => live.textContent = msg, 30);
+    function createLiveRegion() {
+        if (liveRegion) {
+            return;
+        }
+
+        const existing = document.getElementById(UI_IDS.liveRegion);
+
+        if (existing) {
+            liveRegion = existing;
+            return;
+        }
+
+        liveRegion = document.createElement('div');
+        liveRegion.id = UI_IDS.liveRegion;
+        liveRegion.setAttribute('aria-live', 'polite');
+        liveRegion.setAttribute('aria-atomic', 'true');
+
+        applyVisuallyHiddenStyles(liveRegion);
+
+        document.body.appendChild(liveRegion);
     }
 
-    function sync() {
+    function announce(message) {
+        if (!liveRegion) {
+            return;
+        }
+
+        liveRegion.textContent = '';
+
+        window.setTimeout(() => {
+            liveRegion.textContent = message;
+        }, 50);
+    }
+
+    function getStatusText() {
+        const state = getNodeScopeState();
+        const activeText = getIsActive() ? 'activé' : 'désactivé';
+
+        return [
+            `État : ${activeText}`,
+            `Point d’entrée : ${state.entryDescription}`,
+            `Nœud courant : ${state.currentDescription}`
+        ].join('\n');
+    }
+
+    function handleMove(actionFn, successMessage, failureMessage) {
+        if (!getIsActive()) {
+            announce('NodeScope est désactivé');
+            return;
+        }
+
+        const success = actionFn();
+
+        if (!success) {
+            announce(failureMessage);
+            return;
+        }
+
+        announce(`${successMessage} : ${getCurrentNodeSpeechText()}`);
+    }
+
+    function syncNodeScopeInterface() {
+        if (!switchControl || !statusBlock || !setEntryButton) {
+            return;
+        }
+
         const active = getIsActive();
 
-        switchBtn.setAttribute('aria-checked', active ? 'true' : 'false');
+        switchControl.setAttribute('aria-checked', active ? 'true' : 'false');
 
-        hint.textContent = active
+        switchVisibleLabel.textContent = 'NodeScope';
+
+        switchDescription.textContent = active
             ? 'Appuyez sur Espace pour désactiver'
             : 'Appuyez sur Espace pour activer';
 
-        status.textContent = [
-            `État : ${active ? 'activé' : 'désactivé'}`,
-            `Entrée : ${describe(entryNode)}`,
-            `Courant : ${describe(currentNode)}`
-        ].join('\n');
+        statusBlock.textContent = getStatusText();
 
-        entryBtn.disabled = !active;
-        navBtns.forEach(b => b.disabled = !active);
+        setEntryButton.disabled = !active;
+
+        navButtons.forEach((button) => {
+            button.disabled = !active;
+        });
     }
 
-    function move(fn, ok, ko) {
+    function handleSwitchActivation() {
+        if (getIsActive()) {
+            deactivate();
+        } else {
+            activate();
+        }
+
+        switchControl.focus();
+    }
+
+    function handleSetEntryFromFocus() {
         if (!getIsActive()) {
-            announce('NodeScope désactivé');
+            announce('NodeScope est désactivé');
             return;
         }
 
-        if (!fn()) {
-            announce(ko);
+        const success = initializeNodeScopeFromFocus();
+
+        if (!success) {
+            announce('Aucun élément focalisé exploitable');
             return;
         }
 
-        announce(`${ok} : ${getSpeech()}`);
+        announce('Point d’entrée défini');
     }
 
-    function buildUI() {
-        live = document.createElement('div');
-        live.setAttribute('aria-live', 'polite');
-        vh(live);
-        document.body.appendChild(live);
+    function createButton(label, handler) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = label;
+        button.addEventListener('click', handler);
+        return button;
+    }
+
+    function createNavigationGroup() {
+        const group = document.createElement('div');
+        group.id = UI_IDS.navGroup;
+        group.setAttribute('role', 'group');
+        group.setAttribute('aria-label', 'Navigation DOM');
+
+        const btnParent = createButton('Noeud parent', () =>
+            handleMove(moveToParent, 'Noeud parent', 'Aucun noeud parent')
+        );
+
+        const btnChild = createButton('Noeud enfant', () =>
+            handleMove(moveToFirstChild, 'Noeud enfant', 'Aucun noeud enfant')
+        );
+
+        const btnPrev = createButton('Frère précédent', () =>
+            handleMove(moveToPreviousSibling, 'Frère précédent', 'Aucun frère précédent')
+        );
+
+        const btnNext = createButton('Frère suivant', () =>
+            handleMove(moveToNextSibling, 'Frère suivant', 'Aucun frère suivant')
+        );
+
+        navButtons = [btnParent, btnChild, btnPrev, btnNext];
+
+        group.appendChild(btnParent);
+        group.appendChild(btnChild);
+        group.appendChild(btnPrev);
+        group.appendChild(btnNext);
+
+        return group;
+    }
+
+    function createNodeScopeInterface() {
+        const existing = document.getElementById(UI_IDS.section);
+
+        if (existing) {
+            return;
+        }
 
         const section = document.createElement('section');
-        section.setAttribute('aria-labelledby', 'ns-title');
+        section.id = UI_IDS.section;
+        section.setAttribute('aria-labelledby', UI_IDS.title);
 
         const title = document.createElement('h1');
-        title.id = 'ns-title';
+        title.id = UI_IDS.title;
         title.textContent = 'Interface NodeScope';
 
-        switchBtn = document.createElement('button');
-        switchBtn.setAttribute('role', 'switch');
-        switchBtn.setAttribute('aria-checked', 'false');
+        switchControl = document.createElement('button');
+        switchControl.id = UI_IDS.switch;
+        switchControl.type = 'button';
+        switchControl.setAttribute('role', 'switch');
+        switchControl.setAttribute('aria-checked', 'false');
+        switchControl.setAttribute('aria-labelledby', UI_IDS.switchLabel);
+        switchControl.setAttribute('aria-describedby', UI_IDS.switchHint);
 
-        label = document.createElement('span');
-        label.textContent = 'NodeScope';
+        switchVisibleLabel = document.createElement('span');
+        switchVisibleLabel.id = UI_IDS.switchLabel;
+        switchVisibleLabel.textContent = 'NodeScope';
 
-        hint = document.createElement('span');
-        vh(hint);
+        switchDescription = document.createElement('span');
+        switchDescription.id = UI_IDS.switchHint;
+        applyVisuallyHiddenStyles(switchDescription);
 
-        switchBtn.appendChild(label);
-        switchBtn.addEventListener('click', () => {
-            getIsActive() ? deactivate() : activate();
-        });
+        switchControl.appendChild(switchVisibleLabel);
+        switchControl.addEventListener('click', handleSwitchActivation);
 
-        status = document.createElement('pre');
+        statusBlock = document.createElement('pre');
+        statusBlock.id = UI_IDS.status;
+        statusBlock.setAttribute('aria-live', 'polite');
+        statusBlock.setAttribute('aria-atomic', 'true');
 
-        entryBtn = document.createElement('button');
-        entryBtn.textContent = 'Définir point d’entrée';
-        entryBtn.onclick = () => {
-            if (initFromFocus()) {
-                announce('Point d’entrée défini');
-            } else {
-                announce('Impossible');
-            }
-        };
-
-        function nav(label, fn, ok, ko) {
-            const b = document.createElement('button');
-            b.textContent = label;
-            b.onclick = () => move(fn, ok, ko);
-            navBtns.push(b);
-            return b;
-        }
-
-        section.append(
-            title,
-            switchBtn,
-            hint,
-            status,
-            entryBtn,
-            nav('Parent', moveParent, 'Parent', 'Aucun parent'),
-            nav('Enfant', moveChild, 'Enfant', 'Aucun enfant'),
-            nav('Précédent', movePrev, 'Précédent', 'Aucun précédent'),
-            nav('Suivant', moveNext, 'Suivant', 'Aucun suivant')
+        setEntryButton = createButton(
+            'Définir le point d’entrée depuis l’élément focalisé',
+            handleSetEntryFromFocus
         );
+
+        const navGroup = createNavigationGroup();
+
+        section.appendChild(title);
+        section.appendChild(switchControl);
+        section.appendChild(switchDescription);
+        section.appendChild(statusBlock);
+        section.appendChild(setEntryButton);
+        section.appendChild(navGroup);
 
         document.body.appendChild(section);
 
-        subscribe(sync);
-        sync();
+        syncNodeScopeInterface();
     }
 
-    const uiModule = {
+    function triggerNodeScopeSwitch() {
+        if (!switchControl) {
+            const existing = document.getElementById(UI_IDS.switch);
+
+            if (existing) {
+                switchControl = existing;
+            }
+        }
+
+        if (!switchControl) {
+            announce('Interface NodeScope non prête');
+            return;
+        }
+
+        switchControl.click();
+    }
+
+    const nodeScopeUiModule = {
+        name: 'nodescope-ui',
+
         init() {
-            buildUI();
+            if (!document.body) {
+                return;
+            }
+
+            createLiveRegion();
+            createNodeScopeInterface();
+
+            if (!unsubscribeState) {
+                unsubscribeState = subscribeNodeScopeState(() => {
+                    syncNodeScopeInterface();
+                });
+            }
+
+            syncNodeScopeInterface();
         },
+
         onActivate() {
-            if (!currentNode) initFromFocus();
-            sync();
+            const state = getNodeScopeState();
+
+            if (!state.entryNode || !state.currentNode) {
+                initializeNodeScopeFromFocus();
+            }
+
+            syncNodeScopeInterface();
             announce('NodeScope activé');
         },
+
         onDeactivate() {
-            resetState();
-            sync();
+            resetNodeScopeState();
+            syncNodeScopeInterface();
             announce('NodeScope désactivé');
         }
     };
@@ -345,14 +621,23 @@
     ============================== */
 
     function init() {
-        registerModule(uiModule);
+        if (!document.body) {
+            window.setTimeout(init, 50);
+            return;
+        }
+
+        registerModule(nodeScopeUiModule);
         initModules();
 
         registerShortcut({
             ctrl: true,
             shift: true,
+            alt: false,
+            meta: false,
             code: 'Numpad0',
-            handler: () => switchBtn.click()
+            handler: () => {
+                triggerNodeScopeSwitch();
+            }
         });
 
         initKeyboard();
