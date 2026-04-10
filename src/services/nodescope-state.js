@@ -77,6 +77,24 @@ function getFirstElementChild(element) {
     return isHtmlElement(child) ? child : null;
 }
 
+function getFirstElementSibling(element) {
+    if (!isHtmlElement(element) || !isHtmlElement(element.parentElement)) {
+        return null;
+    }
+
+    const firstSibling = element.parentElement.firstElementChild;
+    return isHtmlElement(firstSibling) ? firstSibling : null;
+}
+
+function getLastElementSibling(element) {
+    if (!isHtmlElement(element) || !isHtmlElement(element.parentElement)) {
+        return null;
+    }
+
+    const lastSibling = element.parentElement.lastElementChild;
+    return isHtmlElement(lastSibling) ? lastSibling : null;
+}
+
 function pushJournalEntry(message, type = 'info') {
     const timestamp = new Date().toLocaleTimeString('fr-FR');
 
@@ -254,7 +272,7 @@ export function moveToPreviousSibling() {
     }
 
     currentNode = sibling;
-    pushJournalEntry(`Déplacement vers le frère précédent : ${describeElement(sibling)}`);
+    pushJournalEntry(`Déplacement vers le nœud précédent au même niveau : ${describeElement(sibling)}`);
     notify();
     return true;
 }
@@ -271,7 +289,41 @@ export function moveToNextSibling() {
     }
 
     currentNode = sibling;
-    pushJournalEntry(`Déplacement vers le frère suivant : ${describeElement(sibling)}`);
+    pushJournalEntry(`Déplacement vers le nœud suivant au même niveau : ${describeElement(sibling)}`);
+    notify();
+    return true;
+}
+
+export function moveToFirstSibling() {
+    if (!isHtmlElement(currentNode)) {
+        return false;
+    }
+
+    const sibling = getFirstElementSibling(currentNode);
+
+    if (!isHtmlElement(sibling)) {
+        return false;
+    }
+
+    currentNode = sibling;
+    pushJournalEntry(`Déplacement vers le premier nœud du même niveau : ${describeElement(sibling)}`);
+    notify();
+    return true;
+}
+
+export function moveToLastSibling() {
+    if (!isHtmlElement(currentNode)) {
+        return false;
+    }
+
+    const sibling = getLastElementSibling(currentNode);
+
+    if (!isHtmlElement(sibling)) {
+        return false;
+    }
+
+    currentNode = sibling;
+    pushJournalEntry(`Déplacement vers le dernier nœud du même niveau : ${describeElement(sibling)}`);
     notify();
     return true;
 }

@@ -10,6 +10,8 @@ import {
     moveToFirstChild,
     moveToPreviousSibling,
     moveToNextSibling,
+    moveToFirstSibling,
+    moveToLastSibling,
     toggleHighlightEnabled,
     toggleSectionMode,
     addJournalEntry,
@@ -37,14 +39,16 @@ const UI_IDS = {
 
 const KEYBOARD_HELP = [
     'Ctrl + Maj : activer ou désactiver NodeScope',
-    'Origine + Page précédente simple clic : définir le point d’entrée',
-    'Origine + Page précédente double clic : revenir au point d’entrée',
-    'Page précédente : parent',
-    'Page suivante : premier enfant',
-    'Origine : frère précédent',
-    'Fin : frère suivant',
-    'Origine + PageUp triple clic : activer ou désactiver la surbrillance',
-    'Fin + Page suivante : copier l’analyse du nœud courant'
+    'Alt + Maj + Origine simple clic : nœud précédent au même niveau',
+    'Alt + Maj + Origine double clic : premier nœud du même niveau',
+    'Alt + Maj + Fin simple clic : nœud suivant au même niveau',
+    'Alt + Maj + Fin double clic : dernier nœud du même niveau',
+    'Alt + Maj + Page précédente : parent',
+    'Alt + Maj + Page suivante : premier enfant',
+    'Alt + Maj + Origine + Page précédente simple clic : définir le point d’entrée',
+    'Alt + Maj + Origine + Page précédente double clic : revenir au point d’entrée',
+    'Alt + Maj + Origine + Page précédente triple clic : activer ou désactiver la surbrillance',
+    'Alt + Maj + Fin + Page suivante : copier l’analyse du nœud courant'
 ];
 
 const COMPLETE_CSS_PROPERTIES = [
@@ -727,8 +731,6 @@ function removeNodeScopeInterface() {
 }
 
 function syncNodeScopeInterface() {
-    const state = getNodeScopeState();
-
     if (!getIsActive()) {
         syncHighlight();
         return;
@@ -738,7 +740,6 @@ function syncNodeScopeInterface() {
     renderPathSection();
     renderJournalSection();
     syncHighlight();
-
 }
 
 function handleSetEntryFromFocus() {
@@ -796,7 +797,7 @@ export function triggerMoveParent() {
 }
 
 export function triggerMoveChild() {
-    handleMove(moveToFirstChild, 'Nœud enfant', 'Aucun nœud enfant');
+    handleMove(moveToFirstChild, 'Premier enfant', 'Aucun enfant');
 }
 
 export function triggerMovePrevious() {
@@ -805,6 +806,14 @@ export function triggerMovePrevious() {
 
 export function triggerMoveNext() {
     handleMove(moveToNextSibling, 'Frère suivant', 'Aucun frère suivant');
+}
+
+export function triggerMoveFirst() {
+    handleMove(moveToFirstSibling, 'Premier frère', 'Aucun premier frère');
+}
+
+export function triggerMoveLast() {
+    handleMove(moveToLastSibling, 'Dernier frère', 'Aucun dernier frère');
 }
 
 export function triggerHighlightToggle() {

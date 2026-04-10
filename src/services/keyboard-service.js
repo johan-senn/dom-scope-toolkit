@@ -1,5 +1,6 @@
 const shortcuts = [];
 let keyboardIsInitialized = false;
+
 const pressedCodes = new Set();
 const comboState = new Map();
 
@@ -10,6 +11,9 @@ const SHIFT_CODES = new Set(['ShiftLeft', 'ShiftRight']);
 const ALT_CODES = new Set(['AltLeft', 'AltRight']);
 const META_CODES = new Set(['MetaLeft', 'MetaRight']);
 
+let activeShortcutCandidate = null;
+let activeShortcutExtraKeyDetected = false;
+
 export function registerShortcut(shortcut) {
     const hasHandler = shortcut && typeof shortcut.handler === 'function';
 
@@ -18,7 +22,7 @@ export function registerShortcut(shortcut) {
         return;
     }
 
-    shortcuts.push(shortcut);
+    shortcuts.push(normalizeShortcut(shortcut));
 }
 
 export function initKeyboard() {
@@ -34,38 +38,72 @@ export function initKeyboard() {
 }
 
 function handleKeydown(event) {
+    if (event.repeat) {
+        return;
+    }
+
     pressedCodes.add(event.code);
+
+    const matchingShortcuts = shortcuts.filter((shortcut) => (
+        canOpenCandidate(event, shortcut) &&
+        isShortcutEnabled(shortcut, event)
+    ));
+
+    if (!matchingShortcuts.length) {
+        if (activeShortcutCandidate && !isModifierCode(event.code)) {
+            activeShortcutExtraKeyDetected = true;
+        }
+        return;
+    }
+
+    const bestShortcut = selectBestCandidate(matchingShortcuts);
+
+    if (!bestShortcut) {
+        return;
+    }
+
+    if (
+        activeShortcutCandidate &&
+        activeShortcutCandidate.identity === bestShortcut.identity &&
+        !belongsToShortcut(event.code, bestShortcut)
+    ) {
+        activeShortcutExtraKeyDetected = true;
+        return;
+    }
+
+    if (!activeShortcutCandidate || activeShortcutCandidate.identity !== bestShortcut.identity) {
+        activeShortcutCandidate = bestShortcut;
+        activeShortcutExtraKeyDetected = false;
+    }
 }
 
 function handleKeyup(event) {
-    const matchingShortcuts = shortcuts.filter((shortcut) => matchShortcutOnKeyup(event, shortcut));
+    const pressedBeforeRelease = new Set(pressedCodes);
 
-    if (matchingShortcuts.length) {
-        const multiPressShortcuts = matchingShortcuts.filter(
-            (shortcut) => Number(shortcut.pressCount || 1) > 1 || hasSiblingMultiPressShortcut(shortcut)
-        );
-        const immediateShortcuts = matchingShortcuts.filter(
-            (shortcut) => !multiPressShortcuts.includes(shortcut)
-        );
-
-        if (immediateShortcuts.length) {
-            event.preventDefault();
-            event.stopPropagation();
-            immediateShortcuts.forEach((shortcut) => shortcut.handler(event));
-        }
-
-        if (multiPressShortcuts.length) {
-            event.preventDefault();
-            event.stopPropagation();
-            queueMultiPressHandlers(event, multiPressShortcuts);
-        }
+    if (
+        activeShortcutCandidate &&
+        !activeShortcutExtraKeyDetected &&
+        isShortcutEnabled(activeShortcutCandidate, event) &&
+        isValidKeyupForShortcut(event, activeShortcutCandidate, pressedBeforeRelease)
+    ) {
+        event.preventDefault();
+        event.stopPropagation();
+        dispatchShortcut(activeShortcutCandidate, event);
     }
 
     pressedCodes.delete(event.code);
+
+    if (
+        activeShortcutCandidate &&
+        shouldClearCandidateAfterKeyup(activeShortcutCandidate, pressedCodes)
+    ) {
+        clearActiveShortcutCandidate();
+    }
 }
 
 function resetKeyboardState() {
     pressedCodes.clear();
+    clearActiveShortcutCandidate();
 
     comboState.forEach((state) => {
         if (state && state.timerId) {
@@ -76,16 +114,41 @@ function resetKeyboardState() {
     comboState.clear();
 }
 
-function hasSiblingMultiPressShortcut(shortcut) {
-    const identity = getShortcutIdentity(shortcut);
+function normalizeShortcut(shortcut) {
+    const normalizedCodes = Array.isArray(shortcut.codes)
+        ? Array.from(new Set(shortcut.codes))
+        : (typeof shortcut.code === 'string' ? [shortcut.code] : []);
 
+    return {
+        ...shortcut,
+        codes: normalizedCodes,
+        identity: getShortcutIdentity({
+            ...shortcut,
+            codes: normalizedCodes
+        })
+    };
+}
+
+function dispatchShortcut(shortcut, event) {
+    const siblingMultiPressExists = hasSiblingMultiPressShortcut(shortcut);
+    const expectedPressCount = Number(shortcut.pressCount || 1);
+
+    if (expectedPressCount > 1 || siblingMultiPressExists) {
+        queueMultiPressHandlers(event, shortcut);
+        return;
+    }
+
+    shortcut.handler(event);
+}
+
+function hasSiblingMultiPressShortcut(shortcut) {
     return shortcuts.some(
-        (candidate) => candidate !== shortcut && getShortcutIdentity(candidate) === identity
+        (candidate) => candidate !== shortcut && candidate.identity === shortcut.identity
     );
 }
 
-function queueMultiPressHandlers(event, matchingShortcuts) {
-    const identity = getShortcutIdentity(matchingShortcuts[0]);
+function queueMultiPressHandlers(event, shortcut) {
+    const identity = shortcut.identity;
     const previous = comboState.get(identity);
 
     if (previous && previous.timerId) {
@@ -93,6 +156,7 @@ function queueMultiPressHandlers(event, matchingShortcuts) {
     }
 
     const nextCount = previous ? previous.count + 1 : 1;
+
     const timerId = window.setTimeout(() => {
         const finalState = comboState.get(identity);
 
@@ -103,12 +167,12 @@ function queueMultiPressHandlers(event, matchingShortcuts) {
         const exactShortcut = finalState.shortcuts
             .slice()
             .sort((a, b) => Number(b.pressCount || 1) - Number(a.pressCount || 1))
-            .find((shortcut) => Number(shortcut.pressCount || 1) === finalState.count)
-            || finalState.shortcuts.find((shortcut) => Number(shortcut.pressCount || 1) === 1);
+            .find((candidate) => Number(candidate.pressCount || 1) === finalState.count)
+            || finalState.shortcuts.find((candidate) => Number(candidate.pressCount || 1) === 1);
 
         comboState.delete(identity);
 
-        if (exactShortcut) {
+        if (exactShortcut && isShortcutEnabled(exactShortcut, finalState.event)) {
             exactShortcut.handler(finalState.event);
         }
     }, MULTI_PRESS_DELAY);
@@ -117,13 +181,15 @@ function queueMultiPressHandlers(event, matchingShortcuts) {
         count: nextCount,
         timerId,
         event,
-        shortcuts: matchingShortcuts
+        shortcuts: shortcuts.filter((candidate) => (
+            candidate.identity === identity &&
+            isShortcutEnabled(candidate, event)
+        ))
     });
 }
 
 function getShortcutIdentity(shortcut) {
     const codes = Array.isArray(shortcut.codes) ? [...shortcut.codes].sort().join('+') : '';
-    const code = typeof shortcut.code === 'string' ? shortcut.code : '';
     const key = typeof shortcut.key === 'string' ? shortcut.key.toLowerCase() : '';
 
     return [
@@ -132,38 +198,86 @@ function getShortcutIdentity(shortcut) {
         shortcut.alt ? 'ALT' : '',
         shortcut.meta ? 'META' : '',
         codes,
-        code,
         key
     ].filter(Boolean).join('|');
 }
 
-function matchShortcutOnKeyup(event, shortcut) {
-    const expectedKey = typeof shortcut.key === 'string' ? shortcut.key.toLowerCase() : null;
-    const expectedCode = typeof shortcut.code === 'string' ? shortcut.code : null;
-    const expectedCodes = Array.isArray(shortcut.codes) ? shortcut.codes : null;
-
-    const effectivePressedCodes = new Set(pressedCodes);
-    effectivePressedCodes.add(event.code);
-
-    const modifiersMatch = (
-        (!!shortcut.ctrl === hasAnyCode(effectivePressedCodes, CONTROL_CODES)) &&
-        (!!shortcut.shift === hasAnyCode(effectivePressedCodes, SHIFT_CODES)) &&
-        (!!shortcut.alt === hasAnyCode(effectivePressedCodes, ALT_CODES)) &&
-        (!!shortcut.meta === hasAnyCode(effectivePressedCodes, META_CODES))
-    );
-
-    if (!modifiersMatch) {
+function canOpenCandidate(event, shortcut) {
+    if (!modifiersMatchShortcut(shortcut, pressedCodes)) {
         return false;
     }
 
-    if (expectedCodes && expectedCodes.length) {
-        return expectedCodes.every((code) => effectivePressedCodes.has(code)) && expectedCodes.includes(event.code);
+    if (!Array.isArray(shortcut.codes) || !shortcut.codes.length) {
+        return false;
     }
 
-    const keyMatches = expectedKey ? (event.key || '').toLowerCase() === expectedKey : true;
-    const codeMatches = expectedCode ? event.code === expectedCode : true;
+    if (!shortcut.codes.includes(event.code)) {
+        return false;
+    }
 
-    return keyMatches && codeMatches;
+    return shortcut.codes.every((code) => pressedCodes.has(code));
+}
+
+function isValidKeyupForShortcut(event, shortcut, pressedBeforeRelease) {
+    if (!Array.isArray(shortcut.codes) || !shortcut.codes.length) {
+        return false;
+    }
+
+    if (!shortcut.codes.includes(event.code)) {
+        return false;
+    }
+
+    if (!modifiersMatchShortcut(shortcut, pressedBeforeRelease)) {
+        return false;
+    }
+
+    return shortcut.codes.every((code) => pressedBeforeRelease.has(code));
+}
+
+function modifiersMatchShortcut(shortcut, sourceCodes) {
+    return (
+        (!!shortcut.ctrl === hasAnyCode(sourceCodes, CONTROL_CODES)) &&
+        (!!shortcut.shift === hasAnyCode(sourceCodes, SHIFT_CODES)) &&
+        (!!shortcut.alt === hasAnyCode(sourceCodes, ALT_CODES)) &&
+        (!!shortcut.meta === hasAnyCode(sourceCodes, META_CODES))
+    );
+}
+
+function selectBestCandidate(candidates) {
+    return candidates
+        .slice()
+        .sort((a, b) => {
+            if (b.codes.length !== a.codes.length) {
+                return b.codes.length - a.codes.length;
+            }
+
+            return Number(b.pressCount || 1) - Number(a.pressCount || 1);
+        })[0] || null;
+}
+
+function belongsToShortcut(code, shortcut) {
+    return Array.isArray(shortcut.codes) && shortcut.codes.includes(code);
+}
+
+function shouldClearCandidateAfterKeyup(shortcut, remainingPressedCodes) {
+    const remainingRequiredCodesPressed = shortcut.codes.some((code) => remainingPressedCodes.has(code));
+    const modifiersStillPressed = modifiersMatchShortcut(shortcut, remainingPressedCodes);
+
+    return !remainingRequiredCodesPressed || !modifiersStillPressed;
+}
+
+function clearActiveShortcutCandidate() {
+    activeShortcutCandidate = null;
+    activeShortcutExtraKeyDetected = false;
+}
+
+function isModifierCode(code) {
+    return (
+        CONTROL_CODES.has(code) ||
+        SHIFT_CODES.has(code) ||
+        ALT_CODES.has(code) ||
+        META_CODES.has(code)
+    );
 }
 
 function hasAnyCode(sourceCodes, expectedCodes) {
@@ -174,4 +288,17 @@ function hasAnyCode(sourceCodes, expectedCodes) {
     }
 
     return false;
+}
+
+function isShortcutEnabled(shortcut, event) {
+    if (typeof shortcut.isEnabled !== 'function') {
+        return true;
+    }
+
+    try {
+        return !!shortcut.isEnabled(event);
+    } catch (error) {
+        console.warn('Échec de l’évaluation de disponibilité du raccourci', error);
+        return false;
+    }
 }
