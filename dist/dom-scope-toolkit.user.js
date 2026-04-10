@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dom Scope Toolkit
 // @namespace    https://github.com/johan-senn/dom-scope-toolkit
-// @version      0.6
+// @version      0.7
 // @description  Exploration DOM accessible clavier (NodeScope)
 // @author       Johan Senn
 // @match        *://*/*
@@ -11,7 +11,7 @@
 (function () {
     'use strict';
 
-    const USERSCRIPT_VERSION = '0.5';
+    const USERSCRIPT_VERSION = '0.6';
 
     if (window.__nodescope_loaded__) {
         return;
@@ -114,6 +114,11 @@ const comboState = new Map();
 
 const MULTI_PRESS_DELAY = 350;
 
+const CONTROL_CODES = new Set(['ControlLeft', 'ControlRight']);
+const SHIFT_CODES = new Set(['ShiftLeft', 'ShiftRight']);
+const ALT_CODES = new Set(['AltLeft', 'AltRight']);
+const META_CODES = new Set(['MetaLeft', 'MetaRight']);
+
 function registerShortcut(shortcut) {
     const hasHandler = shortcut && typeof shortcut.handler === 'function';
 
@@ -134,40 +139,50 @@ function initKeyboard() {
 
     document.addEventListener('keydown', handleKeydown, true);
     document.addEventListener('keyup', handleKeyup, true);
-    window.addEventListener('blur', resetPressedCodes, true);
+    window.addEventListener('blur', resetKeyboardState, true);
 }
 
 function handleKeydown(event) {
     pressedCodes.add(event.code);
-
-    const matchingShortcuts = shortcuts.filter((shortcut) => matchShortcut(event, shortcut));
-
-    if (!matchingShortcuts.length) {
-        return;
-    }
-
-    const multiPressShortcuts = matchingShortcuts.filter((shortcut) => Number(shortcut.pressCount || 1) > 1 || hasSiblingMultiPressShortcut(shortcut));
-    const immediateShortcuts = matchingShortcuts.filter((shortcut) => !multiPressShortcuts.includes(shortcut));
-
-    if (immediateShortcuts.length) {
-        event.preventDefault();
-        event.stopPropagation();
-        immediateShortcuts.forEach((shortcut) => shortcut.handler(event));
-    }
-
-    if (multiPressShortcuts.length) {
-        event.preventDefault();
-        event.stopPropagation();
-        queueMultiPressHandlers(event, multiPressShortcuts);
-    }
 }
 
 function handleKeyup(event) {
+    const matchingShortcuts = shortcuts.filter((shortcut) => matchShortcutOnKeyup(event, shortcut));
+
+    if (matchingShortcuts.length) {
+        const multiPressShortcuts = matchingShortcuts.filter(
+            (shortcut) => Number(shortcut.pressCount || 1) > 1 || hasSiblingMultiPressShortcut(shortcut)
+        );
+        const immediateShortcuts = matchingShortcuts.filter(
+            (shortcut) => !multiPressShortcuts.includes(shortcut)
+        );
+
+        if (immediateShortcuts.length) {
+            event.preventDefault();
+            event.stopPropagation();
+            immediateShortcuts.forEach((shortcut) => shortcut.handler(event));
+        }
+
+        if (multiPressShortcuts.length) {
+            event.preventDefault();
+            event.stopPropagation();
+            queueMultiPressHandlers(event, multiPressShortcuts);
+        }
+    }
+
     pressedCodes.delete(event.code);
 }
 
-function resetPressedCodes() {
+function resetKeyboardState() {
     pressedCodes.clear();
+
+    comboState.forEach((state) => {
+        if (state && state.timerId) {
+            window.clearTimeout(state.timerId);
+        }
+    });
+
+    comboState.clear();
 }
 
 function hasSiblingMultiPressShortcut(shortcut) {
@@ -228,16 +243,19 @@ function getShortcutIdentity(shortcut) {
     ].filter(Boolean).join('|');
 }
 
-function matchShortcut(event, shortcut) {
+function matchShortcutOnKeyup(event, shortcut) {
     const expectedKey = typeof shortcut.key === 'string' ? shortcut.key.toLowerCase() : null;
     const expectedCode = typeof shortcut.code === 'string' ? shortcut.code : null;
     const expectedCodes = Array.isArray(shortcut.codes) ? shortcut.codes : null;
 
+    const effectivePressedCodes = new Set(pressedCodes);
+    effectivePressedCodes.add(event.code);
+
     const modifiersMatch = (
-        (!!shortcut.ctrl === event.ctrlKey) &&
-        (!!shortcut.shift === event.shiftKey) &&
-        (!!shortcut.alt === event.altKey) &&
-        (!!shortcut.meta === event.metaKey)
+        (!!shortcut.ctrl === hasAnyCode(effectivePressedCodes, CONTROL_CODES)) &&
+        (!!shortcut.shift === hasAnyCode(effectivePressedCodes, SHIFT_CODES)) &&
+        (!!shortcut.alt === hasAnyCode(effectivePressedCodes, ALT_CODES)) &&
+        (!!shortcut.meta === hasAnyCode(effectivePressedCodes, META_CODES))
     );
 
     if (!modifiersMatch) {
@@ -245,13 +263,23 @@ function matchShortcut(event, shortcut) {
     }
 
     if (expectedCodes && expectedCodes.length) {
-        return expectedCodes.every((code) => pressedCodes.has(code));
+        return expectedCodes.every((code) => effectivePressedCodes.has(code)) && expectedCodes.includes(event.code);
     }
 
     const keyMatches = expectedKey ? (event.key || '').toLowerCase() === expectedKey : true;
     const codeMatches = expectedCode ? event.code === expectedCode : true;
 
     return keyMatches && codeMatches;
+}
+
+function hasAnyCode(sourceCodes, expectedCodes) {
+    for (const code of expectedCodes) {
+        if (sourceCodes.has(code)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 
