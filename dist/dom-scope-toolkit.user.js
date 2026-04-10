@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dom Scope Toolkit
 // @namespace    https://github.com/johan-senn/dom-scope-toolkit
-// @version      0.3
+// @version      0.6
 // @description  Exploration DOM accessible clavier (NodeScope)
 // @author       Johan Senn
 // @match        *://*/*
@@ -11,384 +11,1550 @@
 (function () {
     'use strict';
 
+    const USERSCRIPT_VERSION = '0.5';
+
     if (window.__nodescope_loaded__) {
         return;
     }
     window.__nodescope_loaded__ = true;
 
-    /* ==============================
-       Core : registre des modules
-    ============================== */
 
-    const modules = [];
-    let isActive = false;
-    let isInitialized = false;
+/* ===== src/core/module-registry.js ===== */
 
-    function registerModule(module) {
-        if (!module) return;
-        modules.push(module);
+const modules = [];
+let isActive = false;
+let isInitialized = false;
+
+function registerModule(module) {
+    const hasInit = module && typeof module.init === 'function';
+    const hasOnActivate = module && typeof module.onActivate === 'function';
+    const hasOnDeactivate = module && typeof module.onDeactivate === 'function';
+
+    if (!module || (!hasInit && !hasOnActivate && !hasOnDeactivate)) {
+        console.warn('Module invalide ignoré');
+        return;
     }
 
-    function initModules() {
-        if (isInitialized) return;
-        isInitialized = true;
+    modules.push(module);
+}
 
-        modules.forEach((m) => {
-            if (typeof m.init === 'function') {
-                try { m.init(); } catch (e) { console.error(e); }
+function initModules() {
+    if (isInitialized) {
+        return;
+    }
+
+    isInitialized = true;
+
+    modules.forEach((module) => {
+        try {
+            if (typeof module.init === 'function') {
+                module.init();
             }
-        });
-    }
-
-    function activate() {
-        if (isActive) return;
-        isActive = true;
-
-        modules.forEach((m) => {
-            if (typeof m.onActivate === 'function') {
-                try { m.onActivate(); } catch (e) { console.error(e); }
-            }
-        });
-    }
-
-    function deactivate() {
-        if (!isActive) return;
-        isActive = false;
-
-        modules.forEach((m) => {
-            if (typeof m.onDeactivate === 'function') {
-                try { m.onDeactivate(); } catch (e) { console.error(e); }
-            }
-        });
-    }
-
-    function getIsActive() {
-        return isActive;
-    }
-
-    /* ==============================
-       Service clavier
-    ============================== */
-
-    const shortcuts = [];
-    let keyboardInitialized = false;
-
-    function registerShortcut(shortcut) {
-        if (!shortcut || typeof shortcut.handler !== 'function') {
-            console.warn('Raccourci invalide ignoré');
-            return;
+        } catch (error) {
+            console.error('Erreur lors de l’initialisation d’un module :', error);
         }
-        shortcuts.push(shortcut);
+    });
+}
+
+function activate() {
+    if (isActive) {
+        return;
     }
 
-    function initKeyboard() {
-        if (keyboardInitialized) return;
-        keyboardInitialized = true;
+    isActive = true;
 
-        document.addEventListener('keydown', handleKeydown, true);
+    modules.forEach((module) => {
+        try {
+            if (typeof module.onActivate === 'function') {
+                module.onActivate();
+            }
+        } catch (error) {
+            console.error('Erreur lors de l’activation d’un module :', error);
+        }
+    });
+}
+
+function deactivate() {
+    if (!isActive) {
+        return;
     }
 
-    function handleKeydown(event) {
-        shortcuts.forEach((s) => {
-            if (!matchShortcut(event, s)) return;
+    isActive = false;
 
-            event.preventDefault();
-            event.stopPropagation();
-            s.handler(event);
-        });
+    modules.forEach((module) => {
+        try {
+            if (typeof module.onDeactivate === 'function') {
+                module.onDeactivate();
+            }
+        } catch (error) {
+            console.error('Erreur lors de la désactivation d’un module :', error);
+        }
+    });
+}
+
+function toggle() {
+    if (isActive) {
+        deactivate();
+        return;
     }
 
-    function matchShortcut(event, s) {
-        return (
-            (!!s.ctrl === event.ctrlKey) &&
-            (!!s.shift === event.shiftKey) &&
-            (!!s.alt === event.altKey) &&
-            (!!s.meta === event.metaKey) &&
-            (!s.code || s.code === event.code)
-        );
+    activate();
+}
+
+function getIsActive() {
+    return isActive;
+}
+
+/* ===== src/services/keyboard-service.js ===== */
+
+const shortcuts = [];
+let keyboardIsInitialized = false;
+const pressedCodes = new Set();
+const comboState = new Map();
+
+const MULTI_PRESS_DELAY = 350;
+
+function registerShortcut(shortcut) {
+    const hasHandler = shortcut && typeof shortcut.handler === 'function';
+
+    if (!shortcut || !hasHandler) {
+        console.warn('Raccourci invalide ignoré');
+        return;
     }
 
-    /* ==============================
-       Service état NodeScope
-    ============================== */
+    shortcuts.push(shortcut);
+}
 
-    let entryNode = null;
-    let currentNode = null;
-    const listeners = new Set();
-
-    function isHtmlElement(node) {
-        return node instanceof HTMLElement;
+function initKeyboard() {
+    if (keyboardIsInitialized) {
+        return;
     }
 
-    function notify() {
-        const snapshot = getState();
-        listeners.forEach((l) => {
-            try { l(snapshot); } catch (e) { console.error(e); }
-        });
+    keyboardIsInitialized = true;
+
+    document.addEventListener('keydown', handleKeydown, true);
+    document.addEventListener('keyup', handleKeyup, true);
+    window.addEventListener('blur', resetPressedCodes, true);
+}
+
+function handleKeydown(event) {
+    pressedCodes.add(event.code);
+
+    const matchingShortcuts = shortcuts.filter((shortcut) => matchShortcut(event, shortcut));
+
+    if (!matchingShortcuts.length) {
+        return;
     }
 
-    function describe(el) {
-        if (!isHtmlElement(el)) return 'aucun';
+    const multiPressShortcuts = matchingShortcuts.filter((shortcut) => Number(shortcut.pressCount || 1) > 1 || hasSiblingMultiPressShortcut(shortcut));
+    const immediateShortcuts = matchingShortcuts.filter((shortcut) => !multiPressShortcuts.includes(shortcut));
 
-        const tag = el.tagName.toLowerCase();
-        const id = el.id ? `#${el.id}` : '';
-        const cls = el.classList.length ? '.' + [...el.classList].join('.') : '';
-
-        return `${tag}${id}${cls}`;
+    if (immediateShortcuts.length) {
+        event.preventDefault();
+        event.stopPropagation();
+        immediateShortcuts.forEach((shortcut) => shortcut.handler(event));
     }
 
-    function truncate(text, max) {
-        if (!text || text.length <= max) return text;
-        return text.slice(0, max - 1) + '…';
+    if (multiPressShortcuts.length) {
+        event.preventDefault();
+        event.stopPropagation();
+        queueMultiPressHandlers(event, multiPressShortcuts);
+    }
+}
+
+function handleKeyup(event) {
+    pressedCodes.delete(event.code);
+}
+
+function resetPressedCodes() {
+    pressedCodes.clear();
+}
+
+function hasSiblingMultiPressShortcut(shortcut) {
+    const identity = getShortcutIdentity(shortcut);
+    return shortcuts.some((candidate) => candidate !== shortcut && getShortcutIdentity(candidate) === identity);
+}
+
+function queueMultiPressHandlers(event, matchingShortcuts) {
+    const identity = getShortcutIdentity(matchingShortcuts[0]);
+    const previous = comboState.get(identity);
+
+    if (previous && previous.timerId) {
+        window.clearTimeout(previous.timerId);
     }
 
-    function getSpeech() {
-        if (!isHtmlElement(currentNode)) return 'aucun nœud courant';
+    const nextCount = previous ? previous.count + 1 : 1;
+    const timerId = window.setTimeout(() => {
+        const finalState = comboState.get(identity);
 
-        const tag = currentNode.tagName.toLowerCase();
-        const text = (currentNode.innerText || '').trim();
-
-        return `balise ${tag}${text ? ', texte ' + truncate(text, 60) : ''}`;
-    }
-
-    function getState() {
-        return {
-            entryNode,
-            currentNode,
-            entryDescription: describe(entryNode),
-            currentDescription: describe(currentNode)
-        };
-    }
-
-    function subscribe(listener) {
-        listeners.add(listener);
-        return () => listeners.delete(listener);
-    }
-
-    function resetState() {
-        entryNode = null;
-        currentNode = null;
-        notify();
-    }
-
-    function initFromFocus() {
-        const el = document.activeElement;
-        if (!isHtmlElement(el)) return false;
-
-        entryNode = el;
-        currentNode = el;
-        notify();
-        return true;
-    }
-
-    function moveParent() {
-        if (!isHtmlElement(currentNode)) return false;
-        const p = currentNode.parentElement;
-        if (!isHtmlElement(p)) return false;
-        currentNode = p;
-        notify();
-        return true;
-    }
-
-    function moveChild() {
-        if (!isHtmlElement(currentNode)) return false;
-        const c = currentNode.firstElementChild;
-        if (!isHtmlElement(c)) return false;
-        currentNode = c;
-        notify();
-        return true;
-    }
-
-    function movePrev() {
-        if (!isHtmlElement(currentNode)) return false;
-        const s = currentNode.previousElementSibling;
-        if (!isHtmlElement(s)) return false;
-        currentNode = s;
-        notify();
-        return true;
-    }
-
-    function moveNext() {
-        if (!isHtmlElement(currentNode)) return false;
-        const s = currentNode.nextElementSibling;
-        if (!isHtmlElement(s)) return false;
-        currentNode = s;
-        notify();
-        return true;
-    }
-
-    /* ==============================
-       UI NodeScope
-    ============================== */
-
-    let live = null;
-    let switchBtn, label, hint, status, entryBtn, navBtns = [];
-
-    function vh(el) {
-        el.style.position = 'absolute';
-        el.style.width = '1px';
-        el.style.height = '1px';
-        el.style.margin = '-1px';
-        el.style.overflow = 'hidden';
-    }
-
-    function announce(msg) {
-        if (!live) return;
-        live.textContent = '';
-        setTimeout(() => live.textContent = msg, 30);
-    }
-
-    function sync() {
-        const active = getIsActive();
-
-        switchBtn.setAttribute('aria-checked', active ? 'true' : 'false');
-
-        hint.textContent = active
-            ? 'Appuyez sur Espace pour désactiver'
-            : 'Appuyez sur Espace pour activer';
-
-        status.textContent = [
-            `État : ${active ? 'activé' : 'désactivé'}`,
-            `Entrée : ${describe(entryNode)}`,
-            `Courant : ${describe(currentNode)}`
-        ].join('\n');
-
-        entryBtn.disabled = !active;
-        navBtns.forEach(b => b.disabled = !active);
-    }
-
-    function move(fn, ok, ko) {
-        if (!getIsActive()) {
-            announce('NodeScope désactivé');
+        if (!finalState) {
             return;
         }
 
-        if (!fn()) {
-            announce(ko);
-            return;
-        }
+        const exactShortcut = finalState.shortcuts
+            .slice()
+            .sort((a, b) => Number(b.pressCount || 1) - Number(a.pressCount || 1))
+            .find((shortcut) => Number(shortcut.pressCount || 1) === finalState.count)
+            || finalState.shortcuts.find((shortcut) => Number(shortcut.pressCount || 1) === 1);
 
-        announce(`${ok} : ${getSpeech()}`);
+        comboState.delete(identity);
+
+        if (exactShortcut) {
+            exactShortcut.handler(finalState.event);
+        }
+    }, MULTI_PRESS_DELAY);
+
+    comboState.set(identity, {
+        count: nextCount,
+        timerId,
+        event,
+        shortcuts: matchingShortcuts
+    });
+}
+
+function getShortcutIdentity(shortcut) {
+    const codes = Array.isArray(shortcut.codes) ? [...shortcut.codes].sort().join('+') : '';
+    const code = typeof shortcut.code === 'string' ? shortcut.code : '';
+    const key = typeof shortcut.key === 'string' ? shortcut.key.toLowerCase() : '';
+
+    return [
+        shortcut.ctrl ? 'CTRL' : '',
+        shortcut.shift ? 'SHIFT' : '',
+        shortcut.alt ? 'ALT' : '',
+        shortcut.meta ? 'META' : '',
+        codes,
+        code,
+        key
+    ].filter(Boolean).join('|');
+}
+
+function matchShortcut(event, shortcut) {
+    const expectedKey = typeof shortcut.key === 'string' ? shortcut.key.toLowerCase() : null;
+    const expectedCode = typeof shortcut.code === 'string' ? shortcut.code : null;
+    const expectedCodes = Array.isArray(shortcut.codes) ? shortcut.codes : null;
+
+    const modifiersMatch = (
+        (!!shortcut.ctrl === event.ctrlKey) &&
+        (!!shortcut.shift === event.shiftKey) &&
+        (!!shortcut.alt === event.altKey) &&
+        (!!shortcut.meta === event.metaKey)
+    );
+
+    if (!modifiersMatch) {
+        return false;
     }
 
-    function buildUI() {
-        live = document.createElement('div');
-        live.setAttribute('aria-live', 'polite');
-        vh(live);
-        document.body.appendChild(live);
-
-        const section = document.createElement('section');
-        section.setAttribute('aria-labelledby', 'ns-title');
-
-        const title = document.createElement('h1');
-        title.id = 'ns-title';
-        title.textContent = 'Interface NodeScope';
-
-        switchBtn = document.createElement('button');
-        switchBtn.setAttribute('role', 'switch');
-        switchBtn.setAttribute('aria-checked', 'false');
-
-        label = document.createElement('span');
-        label.textContent = 'NodeScope';
-
-        hint = document.createElement('span');
-        vh(hint);
-
-        switchBtn.appendChild(label);
-        switchBtn.addEventListener('click', () => {
-            getIsActive() ? deactivate() : activate();
-        });
-
-        status = document.createElement('pre');
-
-        entryBtn = document.createElement('button');
-        entryBtn.textContent = 'Définir point d’entrée';
-        entryBtn.onclick = () => {
-            if (initFromFocus()) {
-                announce('Point d’entrée défini');
-            } else {
-                announce('Impossible');
-            }
-        };
-
-        function nav(labelTxt, fn, ok, ko) {
-            const b = document.createElement('button');
-            b.textContent = labelTxt;
-            b.onclick = () => move(fn, ok, ko);
-            navBtns.push(b);
-            return b;
-        }
-
-        section.append(
-            title,
-            switchBtn,
-            hint,
-            status,
-            entryBtn,
-            nav('Noeud parent', moveParent, 'Noeud parent', 'Aucun noeud parent'),
-            nav('Noeud enfant', moveChild, 'Noeud enfant', 'Aucun noeud enfant'),
-            nav('Frère précédent', movePrev, 'Frère précédent', 'Aucun frère précédent'),
-            nav('Frère suivant', moveNext, 'Frère suivant', 'Aucun frère suivant')
-        );
-
-        document.body.appendChild(section);
-
-        subscribe(sync);
-        sync();
+    if (expectedCodes && expectedCodes.length) {
+        return expectedCodes.every((code) => pressedCodes.has(code));
     }
 
-    const uiModule = {
-        init() {
-            buildUI();
-        },
-        onActivate() {
-            if (!currentNode) initFromFocus();
-            sync();
-            announce('NodeScope activé');
-        },
-        onDeactivate() {
-            resetState();
-            sync();
-            announce('NodeScope désactivé');
+    const keyMatches = expectedKey ? (event.key || '').toLowerCase() === expectedKey : true;
+    const codeMatches = expectedCode ? event.code === expectedCode : true;
+
+    return keyMatches && codeMatches;
+}
+
+
+/* ===== src/services/nodescope-state.js ===== */
+
+let entryNode = null;
+let currentNode = null;
+let highlightEnabled = false;
+const listeners = new Set();
+const journalEntries = [];
+const sectionModes = {
+    attributs: 'sufficient',
+    accessibilite: 'sufficient',
+    css: 'sufficient',
+    journal: 'sufficient'
+};
+
+const MAX_JOURNAL_ENTRIES = 40;
+
+function isHtmlElement(node) {
+    return node instanceof HTMLElement;
+}
+
+function notify() {
+    const snapshot = getNodeScopeState();
+
+    listeners.forEach((listener) => {
+        try {
+            listener(snapshot);
+        } catch (error) {
+            console.error('Erreur dans un écouteur NodeScope state :', error);
         }
+    });
+}
+
+function describeElement(element) {
+    if (!isHtmlElement(element)) {
+        return 'aucun';
+    }
+
+    const tag = element.tagName.toLowerCase();
+    const id = element.id ? `#${element.id}` : '';
+    const classNames = element.classList && element.classList.length
+        ? '.' + Array.from(element.classList).join('.')
+        : '';
+
+    return `${tag}${id}${classNames}`;
+}
+
+function truncate(text, maxLength) {
+    if (!text || text.length <= maxLength) {
+        return text;
+    }
+
+    return text.slice(0, maxLength - 1) + '…';
+}
+
+function getPreviousElementSibling(element) {
+    if (!isHtmlElement(element)) {
+        return null;
+    }
+
+    const sibling = element.previousElementSibling;
+    return isHtmlElement(sibling) ? sibling : null;
+}
+
+function getNextElementSibling(element) {
+    if (!isHtmlElement(element)) {
+        return null;
+    }
+
+    const sibling = element.nextElementSibling;
+    return isHtmlElement(sibling) ? sibling : null;
+}
+
+function getFirstElementChild(element) {
+    if (!isHtmlElement(element)) {
+        return null;
+    }
+
+    const child = element.firstElementChild;
+    return isHtmlElement(child) ? child : null;
+}
+
+function pushJournalEntry(message, type = 'info') {
+    const timestamp = new Date().toLocaleTimeString('fr-FR');
+
+    journalEntries.unshift({
+        timestamp,
+        type,
+        message
+    });
+
+    if (journalEntries.length > MAX_JOURNAL_ENTRIES) {
+        journalEntries.length = MAX_JOURNAL_ENTRIES;
+    }
+}
+
+function subscribeNodeScopeState(listener) {
+    if (typeof listener !== 'function') {
+        console.warn('Écouteur NodeScope state invalide ignoré');
+        return () => {};
+    }
+
+    listeners.add(listener);
+
+    return () => {
+        listeners.delete(listener);
     };
+}
 
-    /* ==============================
-       Bootstrap
-    ============================== */
+function getNodeScopeState() {
+    return {
+        entryNode,
+        currentNode,
+        highlightEnabled,
+        sectionModes: { ...sectionModes },
+        journalEntries: [...journalEntries],
+        entryDescription: describeElement(entryNode),
+        currentDescription: describeElement(currentNode)
+    };
+}
 
-    function triggerNodeScopeSwitch() {
-        announce('Raccourci détecté');
+function getCurrentNodeSpeechText() {
+    if (!isHtmlElement(currentNode)) {
+        return 'aucun nœud courant';
+    }
 
-        if (!switchBtn) {
-            const existing = document.querySelector('[role="switch"]');
-            if (existing) {
-                switchBtn = existing;
-            }
-        }
+    const tag = currentNode.tagName.toLowerCase();
+    const id = currentNode.id ? `, identifiant ${currentNode.id}` : '';
+    const text = (currentNode.innerText || currentNode.textContent || '')
+        .replace(/\s+/g, ' ')
+        .trim();
 
-        if (!switchBtn) {
-            announce('Switch introuvable');
+    const textPart = text ? `, texte ${truncate(text, 80)}` : '';
+
+    return `balise ${tag}${id}${textPart}`;
+}
+
+function resetNodeScopeState() {
+    entryNode = null;
+    currentNode = null;
+    highlightEnabled = false;
+    pushJournalEntry('Réinitialisation de l’état NodeScope', 'system');
+    notify();
+}
+
+function clearJournal() {
+    journalEntries.length = 0;
+    pushJournalEntry('Journal vidé', 'system');
+    notify();
+}
+
+function addJournalEntry(message, type = 'info') {
+    pushJournalEntry(message, type);
+    notify();
+}
+
+function setEntryNode(node) {
+    if (!isHtmlElement(node)) {
+        return false;
+    }
+
+    entryNode = node;
+
+    if (!isHtmlElement(currentNode)) {
+        currentNode = node;
+    }
+
+    pushJournalEntry(`Point d’entrée défini : ${describeElement(node)}`);
+    notify();
+    return true;
+}
+
+function setCurrentNode(node) {
+    if (!isHtmlElement(node)) {
+        return false;
+    }
+
+    currentNode = node;
+
+    if (!isHtmlElement(entryNode)) {
+        entryNode = node;
+    }
+
+    pushJournalEntry(`Nœud courant : ${describeElement(node)}`);
+    notify();
+    return true;
+}
+
+function initializeNodeScopeFromFocus() {
+    const activeElement = document.activeElement;
+
+    if (!isHtmlElement(activeElement)) {
+        return false;
+    }
+
+    entryNode = activeElement;
+    currentNode = activeElement;
+    pushJournalEntry(`Initialisation depuis le focus : ${describeElement(activeElement)}`);
+    notify();
+    return true;
+}
+
+function restoreEntryNode() {
+    if (!isHtmlElement(entryNode)) {
+        return false;
+    }
+
+    currentNode = entryNode;
+    pushJournalEntry(`Retour au point d’entrée : ${describeElement(entryNode)}`);
+    notify();
+    return true;
+}
+
+function moveToParent() {
+    if (!isHtmlElement(currentNode)) {
+        return false;
+    }
+
+    const parent = currentNode.parentElement;
+
+    if (!isHtmlElement(parent)) {
+        return false;
+    }
+
+    currentNode = parent;
+    pushJournalEntry(`Déplacement vers le parent : ${describeElement(parent)}`);
+    notify();
+    return true;
+}
+
+function moveToFirstChild() {
+    if (!isHtmlElement(currentNode)) {
+        return false;
+    }
+
+    const child = getFirstElementChild(currentNode);
+
+    if (!isHtmlElement(child)) {
+        return false;
+    }
+
+    currentNode = child;
+    pushJournalEntry(`Déplacement vers le premier enfant : ${describeElement(child)}`);
+    notify();
+    return true;
+}
+
+function moveToPreviousSibling() {
+    if (!isHtmlElement(currentNode)) {
+        return false;
+    }
+
+    const sibling = getPreviousElementSibling(currentNode);
+
+    if (!isHtmlElement(sibling)) {
+        return false;
+    }
+
+    currentNode = sibling;
+    pushJournalEntry(`Déplacement vers le frère précédent : ${describeElement(sibling)}`);
+    notify();
+    return true;
+}
+
+function moveToNextSibling() {
+    if (!isHtmlElement(currentNode)) {
+        return false;
+    }
+
+    const sibling = getNextElementSibling(currentNode);
+
+    if (!isHtmlElement(sibling)) {
+        return false;
+    }
+
+    currentNode = sibling;
+    pushJournalEntry(`Déplacement vers le frère suivant : ${describeElement(sibling)}`);
+    notify();
+    return true;
+}
+
+function toggleHighlightEnabled() {
+    highlightEnabled = !highlightEnabled;
+    pushJournalEntry(`Surbrillance ${highlightEnabled ? 'activée' : 'désactivée'}`);
+    notify();
+    return highlightEnabled;
+}
+
+function setSectionMode(sectionName, mode) {
+    if (!Object.prototype.hasOwnProperty.call(sectionModes, sectionName)) {
+        return false;
+    }
+
+    if (mode !== 'sufficient' && mode !== 'complete') {
+        return false;
+    }
+
+    sectionModes[sectionName] = mode;
+    pushJournalEntry(`Mode ${sectionName} : ${mode === 'complete' ? 'complet' : 'suffisant'}`);
+    notify();
+    return true;
+}
+
+function toggleSectionMode(sectionName) {
+    if (!Object.prototype.hasOwnProperty.call(sectionModes, sectionName)) {
+        return null;
+    }
+
+    const nextMode = sectionModes[sectionName] === 'sufficient' ? 'complete' : 'sufficient';
+    setSectionMode(sectionName, nextMode);
+    return nextMode;
+}
+
+
+/* ===== src/modules/alert-test/index.js ===== */
+
+const alertTestModule = {
+    name: 'alert-test',
+
+    onActivate() {
+        // Module neutralisé durant la phase de fondation.
+        // Aucun alert() pour ne pas perturber le clavier
+        // ni les lecteurs d’écran.
+    },
+
+    onDeactivate() {
+        // Rien pour l’instant.
+    }
+};
+
+/* ===== src/modules/nodescope-ui/index.js ===== */
+
+
+const UI_IDS = {
+    liveRegion: 'nodescope-live-region',
+    section: 'nodescope-interface',
+    title: 'nodescope-interface-title',
+    helpLink: 'nodescope-help-link',
+    dialog: 'nodescope-help-dialog',
+    dialogTitle: 'nodescope-help-dialog-title',
+    currentNodeSection: 'nodescope-current-node-section',
+    currentNodeTitle: 'nodescope-current-node-title',
+    currentNodeContent: 'nodescope-current-node-content',
+    pathSection: 'nodescope-path-section',
+    pathTitle: 'nodescope-path-title',
+    pathContent: 'nodescope-path-content',
+    journalSection: 'nodescope-journal-section',
+    journalTitle: 'nodescope-journal-title',
+    journalContent: 'nodescope-journal-content',
+    highlightBox: 'nodescope-highlight-box'
+};
+
+const KEYBOARD_HELP = [
+    'Ctrl + Maj : activer ou désactiver NodeScope',
+    'Origine + Page précédente simple clic : définir le point d’entrée',
+    'Origine + Page précédente double clic : revenir au point d’entrée',
+    'Page précédente : parent',
+    'Page suivante : premier enfant',
+    'Origine : frère précédent',
+    'Fin : frère suivant',
+    'Origine + PageUp triple clic : activer ou désactiver la surbrillance',
+    'Fin + Page suivante : copier l’analyse du nœud courant'
+];
+
+const COMPLETE_CSS_PROPERTIES = [
+    'display',
+    'position',
+    'top',
+    'right',
+    'bottom',
+    'left',
+    'z-index',
+    'width',
+    'height',
+    'min-width',
+    'min-height',
+    'max-width',
+    'max-height',
+    'margin-top',
+    'margin-right',
+    'margin-bottom',
+    'margin-left',
+    'padding-top',
+    'padding-right',
+    'padding-bottom',
+    'padding-left',
+    'overflow',
+    'visibility',
+    'opacity',
+    'font-family',
+    'font-size',
+    'font-weight',
+    'line-height',
+    'text-align',
+    'color',
+    'background-color',
+    'border-top-width',
+    'border-right-width',
+    'border-bottom-width',
+    'border-left-width',
+    'border-top-style',
+    'border-right-style',
+    'border-bottom-style',
+    'border-left-style',
+    'border-top-color',
+    'border-right-color',
+    'border-bottom-color',
+    'border-left-color',
+    'box-sizing'
+];
+
+const SUFFICIENT_CSS_PROPERTIES = [
+    'display',
+    'position',
+    'width',
+    'height',
+    'overflow',
+    'visibility',
+    'opacity',
+    'font-size',
+    'font-weight',
+    'line-height',
+    'color',
+    'background-color'
+];
+
+let liveRegion = null;
+let dialogElement = null;
+let dialogCloseButton = null;
+let highlightElement = null;
+let lastDialogTrigger = null;
+let unsubscribeState = null;
+let currentNodeContent = null;
+let pathContent = null;
+let journalContent = null;
+
+function applyVisuallyHiddenStyles(element) {
+    element.style.position = 'absolute';
+    element.style.width = '1px';
+    element.style.height = '1px';
+    element.style.margin = '-1px';
+    element.style.border = '0';
+    element.style.padding = '0';
+    element.style.overflow = 'hidden';
+    element.style.clip = 'rect(0 0 0 0)';
+    element.style.whiteSpace = 'nowrap';
+}
+
+function createLiveRegion() {
+    if (liveRegion) {
+        return;
+    }
+
+    liveRegion = document.getElementById(UI_IDS.liveRegion) || document.createElement('div');
+    liveRegion.id = UI_IDS.liveRegion;
+    liveRegion.setAttribute('aria-live', 'polite');
+    liveRegion.setAttribute('aria-atomic', 'true');
+    applyVisuallyHiddenStyles(liveRegion);
+
+    if (!liveRegion.parentNode) {
+        document.body.appendChild(liveRegion);
+    }
+}
+
+function announce(message) {
+    if (!liveRegion) {
+        return;
+    }
+
+    liveRegion.textContent = '';
+
+    window.setTimeout(() => {
+        liveRegion.textContent = message;
+    }, 25);
+}
+
+let audioContext = null;
+
+function getAudioContext() {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+
+    if (!AudioContextClass) {
+        return null;
+    }
+
+    if (!audioContext) {
+        audioContext = new AudioContextClass();
+    }
+
+    return audioContext;
+}
+
+function playBeep(duration = 0.1, frequency = 880, delay = 0) {
+    const context = getAudioContext();
+
+    if (!context) {
+        return;
+    }
+
+    const now = context.currentTime;
+    const oscillator = context.createOscillator();
+    const gainNode = context.createGain();
+
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(frequency, now + delay);
+    gainNode.gain.setValueAtTime(0.001, now + delay);
+    gainNode.gain.exponentialRampToValueAtTime(0.07, now + delay + 0.01);
+    gainNode.gain.exponentialRampToValueAtTime(0.001, now + delay + duration);
+
+    oscillator.connect(gainNode);
+    gainNode.connect(context.destination);
+    oscillator.start(now + delay);
+    oscillator.stop(now + delay + duration + 0.02);
+}
+
+function playSingleBeep() {
+    playBeep(0.1, 880, 0);
+}
+
+function playDoubleBeep() {
+    playBeep(0.08, 660, 0);
+    playBeep(0.08, 660, 0.14);
+}
+
+function createInlineText(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div;
+}
+
+function createSection(titleText, id, contentId) {
+    const section = document.createElement('section');
+    section.id = id;
+
+    const title = document.createElement('h2');
+    title.id = `${id}-title`;
+    title.textContent = titleText;
+
+    section.setAttribute('aria-labelledby', title.id);
+    section.appendChild(title);
+
+    const content = document.createElement('div');
+    content.id = contentId;
+    section.appendChild(content);
+
+    return { section, title, content };
+}
+
+function createSwitch(sectionName, labelText) {
+    const wrapper = document.createElement('div');
+    const label = document.createElement('span');
+    const button = document.createElement('button');
+    const buttonId = `nodescope-switch-${sectionName}`;
+    const labelId = `${buttonId}-label`;
+
+    label.id = labelId;
+    label.textContent = labelText;
+
+    button.type = 'button';
+    button.id = buttonId;
+    button.setAttribute('role', 'switch');
+    button.setAttribute('aria-labelledby', labelId);
+    button.addEventListener('click', () => {
+        const nextMode = toggleSectionMode(sectionName);
+
+        if (!nextMode) {
             return;
         }
 
-        announce('Activation du switch');
-        switchBtn.click();
+        if (nextMode === 'complete') {
+            playSingleBeep();
+            announce(`Mode complet activé pour ${labelText}`);
+        } else {
+            playDoubleBeep();
+            announce(`Mode suffisant activé pour ${labelText}`);
+        }
+    });
+
+    wrapper.appendChild(label);
+    wrapper.appendChild(document.createTextNode(' '));
+    wrapper.appendChild(button);
+
+    return { wrapper, button };
+}
+
+function getElementText(element) {
+    if (!(element instanceof HTMLElement)) {
+        return 'non défini';
     }
+
+    const text = (element.innerText || element.textContent || '').replace(/\s+/g, ' ').trim();
+    return text || 'non défini';
+}
+
+function getAttributeLines(element, mode) {
+    if (!(element instanceof HTMLElement)) {
+        return ['non défini'];
+    }
+
+    const entries = Array.from(element.attributes).map((attribute) => `${attribute.name}="${attribute.value}"`);
+
+    if (!entries.length) {
+        return ['non défini'];
+    }
+
+    if (mode === 'sufficient') {
+        return entries.filter((entry) => !entry.startsWith('style="')).slice(0, 12);
+    }
+
+    return entries;
+}
+
+function getAccessibilityLines(element, mode) {
+    if (!(element instanceof HTMLElement)) {
+        return ['role : non défini'];
+    }
+
+    const lines = [];
+    const roleValue = element.getAttribute('role') || 'non défini';
+    lines.push(`role : ${roleValue}`);
+
+    const ariaEntries = Array.from(element.attributes)
+        .filter((attribute) => attribute.name.startsWith('aria-'))
+        .map((attribute) => `${attribute.name}="${attribute.value}"`);
+
+    if (!ariaEntries.length) {
+        lines.push('ARIA : non défini');
+        return lines;
+    }
+
+    if (mode === 'sufficient') {
+        return lines.concat(ariaEntries.slice(0, 8));
+    }
+
+    return lines.concat(ariaEntries);
+}
+
+function getCssLines(element, mode) {
+    if (!(element instanceof HTMLElement)) {
+        return ['non défini'];
+    }
+
+    const computed = window.getComputedStyle(element);
+    const properties = mode === 'complete' ? COMPLETE_CSS_PROPERTIES : SUFFICIENT_CSS_PROPERTIES;
+
+    return properties.map((property) => `${property} : ${computed.getPropertyValue(property) || 'non défini'}`);
+}
+
+function getBreadcrumbLines(element) {
+    if (!(element instanceof HTMLElement)) {
+        return ['Point d’entrée : aucun', 'Fil d’Ariane : aucun'];
+    }
+
+    const ancestors = [];
+    let current = element;
+
+    while (current && ancestors.length < 5) {
+        ancestors.unshift(describeElement(current));
+        current = current.parentElement;
+    }
+
+    const state = getNodeScopeState();
+
+    return [
+        `Point d’entrée : ${state.entryDescription}`,
+        `Fil d’Ariane : ${ancestors.join(' > ')}`
+    ];
+}
+
+function describeElement(element) {
+    if (!(element instanceof HTMLElement)) {
+        return 'aucun';
+    }
+
+    const tag = element.tagName.toLowerCase();
+    const id = element.id ? `#${element.id}` : '';
+    const classNames = element.classList.length ? `.${Array.from(element.classList).join('.')}` : '';
+
+    return `${tag}${id}${classNames}`;
+}
+
+function formatNodeAnalysis() {
+    const state = getNodeScopeState();
+    const element = state.currentNode;
+
+    const lines = [];
+    lines.push('NodeScope');
+    lines.push('');
+    lines.push(`Nœud courant : ${state.currentDescription}`);
+    lines.push(`Point d’entrée : ${state.entryDescription}`);
+    lines.push('');
+    lines.push('[Identification]');
+    lines.push(`Tag : ${element ? element.tagName.toLowerCase() : 'non défini'}`);
+    lines.push(`ID : ${element && element.id ? element.id : 'non défini'}`);
+
+    const classes = element && element.classList.length ? Array.from(element.classList) : [];
+    lines.push(`Classes : ${classes.length ? classes.join(', ') : 'non défini'}`);
+    lines.push('');
+    lines.push('[Attributs]');
+    lines.push(...getAttributeLines(element, state.sectionModes.attributs));
+    lines.push('');
+    lines.push('[Accessibilité]');
+    lines.push(...getAccessibilityLines(element, state.sectionModes.accessibilite));
+    lines.push('');
+    lines.push('[Texte]');
+    lines.push(getElementText(element));
+    lines.push('');
+    lines.push('[Structure HTML]');
+    lines.push(element ? element.outerHTML : 'non défini');
+    lines.push('');
+    lines.push('[CSS calculée]');
+    lines.push(...getCssLines(element, state.sectionModes.css));
+
+    return lines.join('\n');
+}
+
+async function copyCurrentNodeAnalysis() {
+    if (!getIsActive()) {
+        announce('NodeScope est désactivé');
+        return;
+    }
+
+    const state = getNodeScopeState();
+
+    if (!state.currentNode) {
+        announce('Aucun nœud courant à copier');
+        return;
+    }
+
+    try {
+        await navigator.clipboard.writeText(formatNodeAnalysis());
+        addJournalEntry('Analyse copiée dans le presse-papier');
+        playSingleBeep();
+        announce('Analyse copiée dans le presse-papier');
+    } catch (error) {
+        console.error(error);
+        announce('Impossible de copier dans le presse-papier');
+    }
+}
+
+function renderCurrentNodeSection() {
+    if (!currentNodeContent) {
+        return;
+    }
+
+    currentNodeContent.innerHTML = '';
+
+    const state = getNodeScopeState();
+    const element = state.currentNode;
+
+    const identificationTitle = document.createElement('h3');
+    identificationTitle.textContent = 'Identification';
+    currentNodeContent.appendChild(identificationTitle);
+    currentNodeContent.appendChild(createInlineText(`Tag : ${element ? element.tagName.toLowerCase() : 'non défini'}`));
+    currentNodeContent.appendChild(createInlineText(`ID : ${element && element.id ? element.id : 'non défini'}`));
+    currentNodeContent.appendChild(createInlineText(`Classes : ${element && element.classList.length ? Array.from(element.classList).join(', ') : 'non défini'}`));
+
+    const attributesTitle = document.createElement('h3');
+    attributesTitle.textContent = 'Attributs';
+    currentNodeContent.appendChild(attributesTitle);
+    const attributesSwitch = createSwitch('attributs', 'Mode Attributs');
+    attributesSwitch.button.setAttribute('aria-checked', state.sectionModes.attributs === 'complete' ? 'true' : 'false');
+    attributesSwitch.button.textContent = state.sectionModes.attributs === 'complete' ? 'Complet' : 'Suffisant';
+    currentNodeContent.appendChild(attributesSwitch.wrapper);
+    getAttributeLines(element, state.sectionModes.attributs).forEach((line) => {
+        currentNodeContent.appendChild(createInlineText(line));
+    });
+
+    const accessibilityTitle = document.createElement('h3');
+    accessibilityTitle.textContent = 'Accessibilité';
+    currentNodeContent.appendChild(accessibilityTitle);
+    const accessibilitySwitch = createSwitch('accessibilite', 'Mode Accessibilité');
+    accessibilitySwitch.button.setAttribute('aria-checked', state.sectionModes.accessibilite === 'complete' ? 'true' : 'false');
+    accessibilitySwitch.button.textContent = state.sectionModes.accessibilite === 'complete' ? 'Complet' : 'Suffisant';
+    currentNodeContent.appendChild(accessibilitySwitch.wrapper);
+    getAccessibilityLines(element, state.sectionModes.accessibilite).forEach((line) => {
+        currentNodeContent.appendChild(createInlineText(line));
+    });
+
+    const textTitle = document.createElement('h3');
+    textTitle.textContent = 'Texte';
+    currentNodeContent.appendChild(textTitle);
+    currentNodeContent.appendChild(createInlineText(getElementText(element)));
+
+    const htmlTitle = document.createElement('h3');
+    htmlTitle.textContent = 'Structure HTML';
+    currentNodeContent.appendChild(htmlTitle);
+    currentNodeContent.appendChild(createInlineText(element ? element.outerHTML : 'non défini'));
+
+    const cssTitle = document.createElement('h3');
+    cssTitle.textContent = 'CSS calculée';
+    currentNodeContent.appendChild(cssTitle);
+    const cssSwitch = createSwitch('css', 'Mode CSS calculée');
+    cssSwitch.button.setAttribute('aria-checked', state.sectionModes.css === 'complete' ? 'true' : 'false');
+    cssSwitch.button.textContent = state.sectionModes.css === 'complete' ? 'Complet' : 'Suffisant';
+    currentNodeContent.appendChild(cssSwitch.wrapper);
+    getCssLines(element, state.sectionModes.css).forEach((line) => {
+        currentNodeContent.appendChild(createInlineText(line));
+    });
+}
+
+function renderPathSection() {
+    if (!pathContent) {
+        return;
+    }
+
+    pathContent.innerHTML = '';
+    const state = getNodeScopeState();
+    getBreadcrumbLines(state.currentNode).forEach((line) => {
+        pathContent.appendChild(createInlineText(line));
+    });
+}
+
+function renderJournalSection() {
+    if (!journalContent) {
+        return;
+    }
+
+    journalContent.innerHTML = '';
+    const state = getNodeScopeState();
+
+    const switchControl = createSwitch('journal', 'Mode Journal');
+    switchControl.button.setAttribute('aria-checked', state.sectionModes.journal === 'complete' ? 'true' : 'false');
+    switchControl.button.textContent = state.sectionModes.journal === 'complete' ? 'Complet' : 'Suffisant';
+    journalContent.appendChild(switchControl.wrapper);
+
+    const clearButton = document.createElement('button');
+    clearButton.type = 'button';
+    clearButton.textContent = 'Vider le journal';
+    clearButton.addEventListener('click', () => {
+        clearJournal();
+        announce('Journal vidé');
+    });
+    journalContent.appendChild(clearButton);
+
+    const entries = state.sectionModes.journal === 'complete'
+        ? state.journalEntries
+        : state.journalEntries.slice(0, 10);
+
+    const lastAction = entries[0] ? `Dernière action : ${entries[0].timestamp} — ${entries[0].message}` : 'Dernière action : non définie';
+    journalContent.appendChild(createInlineText(lastAction));
+
+    if (!entries.length) {
+        journalContent.appendChild(createInlineText('Journal : non défini'));
+        return;
+    }
+
+    entries.forEach((entry) => {
+        journalContent.appendChild(createInlineText(`${entry.timestamp} — ${entry.message}`));
+    });
+}
+
+function ensureHighlightElement() {
+    if (highlightElement) {
+        return;
+    }
+
+    highlightElement = document.getElementById(UI_IDS.highlightBox) || document.createElement('div');
+    highlightElement.id = UI_IDS.highlightBox;
+    highlightElement.setAttribute('aria-hidden', 'true');
+    highlightElement.style.position = 'absolute';
+    highlightElement.style.pointerEvents = 'none';
+    highlightElement.style.outline = '3px solid #d00';
+    highlightElement.style.outlineOffset = '2px';
+    highlightElement.style.zIndex = '2147483647';
+
+    if (!highlightElement.parentNode) {
+        document.body.appendChild(highlightElement);
+    }
+}
+
+function syncHighlight() {
+    const state = getNodeScopeState();
+
+    if (!state.highlightEnabled || !(state.currentNode instanceof HTMLElement)) {
+        if (highlightElement) {
+            highlightElement.style.display = 'none';
+        }
+        return;
+    }
+
+    ensureHighlightElement();
+
+    const rect = state.currentNode.getBoundingClientRect();
+    highlightElement.style.display = 'block';
+    highlightElement.style.top = `${window.scrollY + rect.top}px`;
+    highlightElement.style.left = `${window.scrollX + rect.left}px`;
+    highlightElement.style.width = `${rect.width}px`;
+    highlightElement.style.height = `${rect.height}px`;
+}
+
+function openHelpDialog(trigger) {
+    if (!dialogElement) {
+        return;
+    }
+
+    lastDialogTrigger = trigger || document.activeElement;
+    dialogElement.hidden = false;
+    dialogCloseButton.focus();
+}
+
+function closeHelpDialog() {
+    if (!dialogElement) {
+        return;
+    }
+
+    dialogElement.hidden = true;
+
+    if (lastDialogTrigger instanceof HTMLElement) {
+        lastDialogTrigger.focus();
+    }
+}
+
+function handleDialogKeydown(event) {
+    if (event.key === 'Escape') {
+        event.preventDefault();
+        closeHelpDialog();
+        return;
+    }
+
+    if (event.key !== 'Tab') {
+        return;
+    }
+
+    const focusable = Array.from(dialogElement.querySelectorAll('button, [href], [tabindex]:not([tabindex="-1"])'))
+        .filter((element) => !element.hasAttribute('disabled'));
+
+    if (!focusable.length) {
+        return;
+    }
+
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+
+    if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+        return;
+    }
+
+    if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+    }
+}
+
+function createHelpDialog() {
+    dialogElement = document.createElement('div');
+    dialogElement.id = UI_IDS.dialog;
+    dialogElement.setAttribute('role', 'dialog');
+    dialogElement.setAttribute('aria-modal', 'true');
+    dialogElement.setAttribute('aria-labelledby', UI_IDS.dialogTitle);
+    dialogElement.hidden = true;
+    dialogElement.addEventListener('keydown', handleDialogKeydown);
+
+    const title = document.createElement('h2');
+    title.id = UI_IDS.dialogTitle;
+    title.textContent = 'Aide sur les commandes NodeScope';
+
+    const list = document.createElement('ul');
+    KEYBOARD_HELP.forEach((commandText) => {
+        const item = document.createElement('li');
+        item.textContent = commandText;
+        list.appendChild(item);
+    });
+
+    dialogCloseButton = document.createElement('button');
+    dialogCloseButton.type = 'button';
+    dialogCloseButton.textContent = 'Fermer';
+    dialogCloseButton.addEventListener('click', closeHelpDialog);
+
+    dialogElement.appendChild(title);
+    dialogElement.appendChild(list);
+    dialogElement.appendChild(dialogCloseButton);
+
+    return dialogElement;
+}
+
+function createNodeScopeInterface() {
+    const existing = document.getElementById(UI_IDS.section);
+
+    if (existing) {
+        return;
+    }
+
+    const section = document.createElement('section');
+    section.id = UI_IDS.section;
+    section.setAttribute('aria-labelledby', UI_IDS.title);
+
+    const title = document.createElement('h1');
+    title.id = UI_IDS.title;
+    title.textContent = 'NodeScope';
+
+    const helpLink = document.createElement('button');
+    helpLink.type = 'button';
+    helpLink.id = UI_IDS.helpLink;
+    helpLink.textContent = 'Aide sur les commandes NodeScope';
+    helpLink.addEventListener('click', () => openHelpDialog(helpLink));
+
+    const copyButton = document.createElement('button');
+    copyButton.type = 'button';
+    copyButton.textContent = 'Copier le résultat de l’analyse';
+    copyButton.addEventListener('click', copyCurrentNodeAnalysis);
+
+    const setEntryButton = document.createElement('button');
+    setEntryButton.type = 'button';
+    setEntryButton.textContent = 'Définir le point d’entrée depuis l’élément focalisé';
+    setEntryButton.addEventListener('click', handleSetEntryFromFocus);
+
+    const currentNodeSection = createSection('Nœud courant', UI_IDS.currentNodeSection, UI_IDS.currentNodeContent);
+    const pathSection = createSection('Chemin courant', UI_IDS.pathSection, UI_IDS.pathContent);
+    const journalSection = createSection('Journal NodeScope', UI_IDS.journalSection, UI_IDS.journalContent);
+
+    currentNodeContent = currentNodeSection.content;
+    pathContent = pathSection.content;
+    journalContent = journalSection.content;
+
+    section.appendChild(title);
+    section.appendChild(helpLink);
+    section.appendChild(copyButton);
+    section.appendChild(setEntryButton);
+    section.appendChild(currentNodeSection.section);
+    section.appendChild(pathSection.section);
+    section.appendChild(journalSection.section);
+    section.appendChild(createHelpDialog());
+
+    document.body.appendChild(section);
+}
+
+function removeNodeScopeInterface() {
+    const existing = document.getElementById(UI_IDS.section);
+
+    if (existing && existing.parentNode) {
+        existing.parentNode.removeChild(existing);
+    }
+
+    dialogElement = null;
+    dialogCloseButton = null;
+    currentNodeContent = null;
+    pathContent = null;
+    journalContent = null;
+}
+
+function syncNodeScopeInterface() {
+    const state = getNodeScopeState();
+
+    if (!getIsActive()) {
+        syncHighlight();
+        return;
+    }
+
+    renderCurrentNodeSection();
+    renderPathSection();
+    renderJournalSection();
+    syncHighlight();
+
+}
+
+function handleSetEntryFromFocus() {
+    if (!getIsActive()) {
+        announce('NodeScope est désactivé');
+        return;
+    }
+
+    const success = initializeNodeScopeFromFocus();
+
+    if (!success) {
+        announce('Aucun élément focalisé exploitable');
+        return;
+    }
+
+    playSingleBeep();
+    announce('Point d’entrée défini');
+}
+
+function handleMove(actionFn, successMessage, failureMessage) {
+    if (!getIsActive()) {
+        announce('NodeScope est désactivé');
+        return;
+    }
+
+    const success = actionFn();
+
+    if (!success) {
+        announce(failureMessage);
+        return;
+    }
+
+    announce(`${successMessage} : ${getCurrentNodeSpeechText()}`);
+}
+
+function triggerNodeScopeSwitch() {
+    if (getIsActive()) {
+        deactivate();
+        return;
+    }
+
+    activate();
+}
+
+function triggerSetEntry() {
+    handleSetEntryFromFocus();
+}
+
+function triggerRestoreEntry() {
+    handleMove(restoreEntryNode, 'Retour au point d’entrée', 'Aucun point d’entrée défini');
+}
+
+function triggerMoveParent() {
+    handleMove(moveToParent, 'Nœud parent', 'Aucun nœud parent');
+}
+
+function triggerMoveChild() {
+    handleMove(moveToFirstChild, 'Nœud enfant', 'Aucun nœud enfant');
+}
+
+function triggerMovePrevious() {
+    handleMove(moveToPreviousSibling, 'Frère précédent', 'Aucun frère précédent');
+}
+
+function triggerMoveNext() {
+    handleMove(moveToNextSibling, 'Frère suivant', 'Aucun frère suivant');
+}
+
+function triggerHighlightToggle() {
+    if (!getIsActive()) {
+        announce('NodeScope est désactivé');
+        return;
+    }
+
+    const enabled = toggleHighlightEnabled();
+
+    if (enabled) {
+        playSingleBeep();
+        announce('Surbrillance activée');
+    } else {
+        playDoubleBeep();
+        announce('Surbrillance désactivée');
+    }
+}
+
+function triggerCopy() {
+    copyCurrentNodeAnalysis();
+}
+
+const nodeScopeUiModule = {
+    name: 'nodescope-ui',
+
+    init() {
+        if (!document.body) {
+            return;
+        }
+
+        createLiveRegion();
+
+        if (!unsubscribeState) {
+            unsubscribeState = subscribeNodeScopeState(() => {
+                syncNodeScopeInterface();
+            });
+        }
+    },
+
+    onActivate() {
+        createNodeScopeInterface();
+
+        const state = getNodeScopeState();
+        if (!state.entryNode || !state.currentNode) {
+            initializeNodeScopeFromFocus();
+        }
+
+        playSingleBeep();
+        syncNodeScopeInterface();
+        announce('NodeScope activé');
+    },
+
+    onDeactivate() {
+        resetNodeScopeState();
+        playDoubleBeep();
+        removeNodeScopeInterface();
+        syncHighlight();
+        announce('NodeScope désactivé');
+    }
+};
+
+
+/* ===== src/bootstrap/main.js ===== */
+
+
+(function () {
+    'use strict';
 
     function init() {
-        registerModule(uiModule);
+        if (!document.body) {
+            window.setTimeout(init, 50);
+            return;
+        }
+
+        registerModule(nodeScopeUiModule);
+        registerModule(alertTestModule);
+
         initModules();
 
         registerShortcut({
             ctrl: true,
             shift: true,
-            code: 'Numpad0',
+            alt: false,
+            meta: false,
+            code: 'ShiftLeft',
             handler: triggerNodeScopeSwitch
+        });
+
+        registerShortcut({
+            ctrl: true,
+            shift: true,
+            alt: false,
+            meta: false,
+            code: 'ShiftRight',
+            handler: triggerNodeScopeSwitch
+        });
+
+        registerShortcut({
+            ctrl: false,
+            shift: false,
+            alt: false,
+            meta: false,
+            codes: ['Home', 'PageUp'],
+            pressCount: 1,
+            handler: triggerSetEntry
+        });
+
+        registerShortcut({
+            ctrl: false,
+            shift: false,
+            alt: false,
+            meta: false,
+            codes: ['Home', 'PageUp'],
+            pressCount: 2,
+            handler: triggerRestoreEntry
+        });
+
+        registerShortcut({
+            ctrl: false,
+            shift: false,
+            alt: false,
+            meta: false,
+            codes: ['Home', 'PageUp'],
+            pressCount: 3,
+            handler: triggerHighlightToggle
+        });
+
+        registerShortcut({
+            ctrl: false,
+            shift: false,
+            alt: false,
+            meta: false,
+            code: 'PageUp',
+            handler: triggerMoveParent
+        });
+
+        registerShortcut({
+            ctrl: false,
+            shift: false,
+            alt: false,
+            meta: false,
+            code: 'PageDown',
+            handler: triggerMoveChild
+        });
+
+        registerShortcut({
+            ctrl: false,
+            shift: false,
+            alt: false,
+            meta: false,
+            code: 'Home',
+            handler: triggerMovePrevious
+        });
+
+        registerShortcut({
+            ctrl: false,
+            shift: false,
+            alt: false,
+            meta: false,
+            code: 'End',
+            handler: triggerMoveNext
+        });
+
+        registerShortcut({
+            ctrl: false,
+            shift: false,
+            alt: false,
+            meta: false,
+            codes: ['End', 'PageDown'],
+            pressCount: 1,
+            handler: triggerCopy
         });
 
         initKeyboard();
     }
 
     init();
+})();
+
+
 })();
