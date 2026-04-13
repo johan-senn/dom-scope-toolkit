@@ -129,6 +129,24 @@ function normalizeShortcut(shortcut) {
     };
 }
 
+function buildShortcutContext(shortcut, pressCount) {
+    return {
+        timestamp: Date.now(),
+        pressCount: Number(pressCount || 1),
+        codes: Array.isArray(shortcut.codes) ? [...shortcut.codes] : [],
+        shortcut: {
+            identity: shortcut.identity,
+            codes: Array.isArray(shortcut.codes) ? [...shortcut.codes] : [],
+            key: typeof shortcut.key === 'string' ? shortcut.key : null,
+            ctrl: !!shortcut.ctrl,
+            shift: !!shortcut.shift,
+            alt: !!shortcut.alt,
+            meta: !!shortcut.meta,
+            pressCount: Number(shortcut.pressCount || 1)
+        }
+    };
+}
+
 function dispatchShortcut(shortcut, event) {
     const siblingMultiPressExists = hasSiblingMultiPressShortcut(shortcut);
     const expectedPressCount = Number(shortcut.pressCount || 1);
@@ -138,7 +156,8 @@ function dispatchShortcut(shortcut, event) {
         return;
     }
 
-    shortcut.handler(event);
+    const context = buildShortcutContext(shortcut, expectedPressCount);
+    shortcut.handler(event, context);
 }
 
 function hasSiblingMultiPressShortcut(shortcut) {
@@ -173,7 +192,8 @@ function queueMultiPressHandlers(event, shortcut) {
         comboState.delete(identity);
 
         if (exactShortcut && isShortcutEnabled(exactShortcut, finalState.event)) {
-            exactShortcut.handler(finalState.event);
+            const context = buildShortcutContext(exactShortcut, finalState.count);
+            exactShortcut.handler(finalState.event, context);
         }
     }, MULTI_PRESS_DELAY);
 

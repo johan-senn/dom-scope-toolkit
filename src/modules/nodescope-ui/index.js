@@ -2,7 +2,7 @@ import { activate, deactivate, getIsActive } from '../../core/module-registry.js
 import {
     getNodeScopeState,
     getCurrentNodeSpeechText,
-    initializeNodeScopeFromFocus,
+    defineEntryPoint,
     resetNodeScopeState,
     restoreEntryNode,
     subscribeNodeScopeState,
@@ -14,7 +14,8 @@ import {
     moveToLastSibling,
     toggleHighlightEnabled,
     toggleSectionMode,
-    addJournalEntry,
+    recordActionAndNotify,
+    recordKeyboardEvent,
     clearJournal
 } from '../../services/nodescope-state.js';
 
@@ -45,7 +46,7 @@ const KEYBOARD_HELP = [
     'Alt + Maj + Fin double clic : dernier nœud du même niveau',
     'Alt + Maj + Page précédente : parent',
     'Alt + Maj + Page suivante : premier enfant',
-    'Alt + Maj + Origine + Page précédente simple clic : définir le point d’entrée',
+    'Alt + Maj + Origine + Page précédente simple clic : définir le point d’entrée (sélection ou focus)',
     'Alt + Maj + Origine + Page précédente double clic : revenir au point d’entrée',
     'Alt + Maj + Origine + Page précédente triple clic : activer ou désactiver la surbrillance',
     'Alt + Maj + Fin + Page suivante : copier l’analyse du nœud courant'
@@ -403,26 +404,48 @@ function formatNodeAnalysis() {
     return lines.join('\n');
 }
 
-async function copyCurrentNodeAnalysis() {
+async function copyCurrentNodeAnalysis(actionContext) {
     if (!getIsActive()) {
         announce('NodeScope est désactivé');
         return;
     }
 
+    if (actionContext) {
+        recordKeyboardEvent(actionContext);
+    }
+
     const state = getNodeScopeState();
 
     if (!state.currentNode) {
+        recordActionAndNotify({
+            id: 'copy-analysis',
+            label: 'Copie de l’analyse',
+            type: 'clipboard',
+            success: false
+        }, actionContext);
         announce('Aucun nœud courant à copier');
         return;
     }
 
     try {
         await navigator.clipboard.writeText(formatNodeAnalysis());
-        addJournalEntry('Analyse copiée dans le presse-papier');
+        recordActionAndNotify({
+            id: 'copy-analysis',
+            label: 'Analyse copiée dans le presse-papier',
+            type: 'clipboard',
+            success: true,
+            journalMessage: 'Analyse copiée dans le presse-papier'
+        }, actionContext);
         playSingleBeep();
         announce('Analyse copiée dans le presse-papier');
     } catch (error) {
         console.error(error);
+        recordActionAndNotify({
+            id: 'copy-analysis',
+            label: 'Copie dans le presse-papier',
+            type: 'clipboard',
+            success: false
+        }, actionContext);
         announce('Impossible de copier dans le presse-papier');
     }
 }
@@ -526,8 +549,11 @@ function renderJournalSection() {
         ? state.journalEntries
         : state.journalEntries.slice(0, 10);
 
-    const lastAction = entries[0] ? `Dernière action : ${entries[0].timestamp} — ${entries[0].message}` : 'Dernière action : non définie';
-    journalContent.appendChild(createInlineText(lastAction));
+    const lastActionEntry = state.lastAction;
+    const lastActionLabel = lastActionEntry
+        ? `Dernière action : ${lastActionEntry.timestamp} — ${lastActionEntry.label}${lastActionEntry.success ? '' : ' (échec)'}`
+        : 'Dernière action : non définie';
+    journalContent.appendChild(createInlineText(lastActionLabel));
 
     if (!entries.length) {
         journalContent.appendChild(createInlineText('Journal : non défini'));
@@ -689,12 +715,12 @@ function createNodeScopeInterface() {
     const copyButton = document.createElement('button');
     copyButton.type = 'button';
     copyButton.textContent = 'Copier le résultat de l’analyse';
-    copyButton.addEventListener('click', copyCurrentNodeAnalysis);
+    copyButton.addEventListener('click', () => copyCurrentNodeAnalysis());
 
     const setEntryButton = document.createElement('button');
     setEntryButton.type = 'button';
-    setEntryButton.textContent = 'Définir le point d’entrée depuis l’élément focalisé';
-    setEntryButton.addEventListener('click', handleSetEntryFromFocus);
+    setEntryButton.textContent = 'Définir le point d’entrée depuis la sélection ou l’élément focalisé';
+    setEntryButton.addEventListener('click', () => handleDefineEntryPoint());
 
     const currentNodeSection = createSection('Nœud courant', UI_IDS.currentNodeSection, UI_IDS.currentNodeContent);
     const pathSection = createSection('Chemin courant', UI_IDS.pathSection, UI_IDS.pathContent);
@@ -742,16 +768,16 @@ function syncNodeScopeInterface() {
     syncHighlight();
 }
 
-function handleSetEntryFromFocus() {
+function handleDefineEntryPoint(actionContext) {
     if (!getIsActive()) {
         announce('NodeScope est désactivé');
         return;
     }
 
-    const success = initializeNodeScopeFromFocus();
+    const result = defineEntryPoint(actionContext);
 
-    if (!success) {
-        announce('Aucun élément focalisé exploitable');
+    if (!result || !result.success) {
+        announce('Aucune sélection ou élément focalisé exploitable');
         return;
     }
 
@@ -759,13 +785,13 @@ function handleSetEntryFromFocus() {
     announce('Point d’entrée défini');
 }
 
-function handleMove(actionFn, successMessage, failureMessage) {
+function handleMove(actionFn, successMessage, failureMessage, actionContext) {
     if (!getIsActive()) {
         announce('NodeScope est désactivé');
         return;
     }
 
-    const success = actionFn();
+    const success = actionFn(actionContext);
 
     if (!success) {
         announce(failureMessage);
@@ -775,54 +801,70 @@ function handleMove(actionFn, successMessage, failureMessage) {
     announce(`${successMessage} : ${getCurrentNodeSpeechText()}`);
 }
 
-export function triggerNodeScopeSwitch() {
+export function triggerNodeScopeSwitch(event, actionContext) {
+    if (actionContext) {
+        recordKeyboardEvent(actionContext);
+    }
+
     if (getIsActive()) {
+        recordActionAndNotify({
+            id: 'toggle-nodescope',
+            label: 'Désactivation de NodeScope',
+            type: 'system',
+            success: true
+        }, actionContext);
         deactivate();
         return;
     }
 
+    recordActionAndNotify({
+        id: 'toggle-nodescope',
+        label: 'Activation de NodeScope',
+        type: 'system',
+        success: true
+    }, actionContext);
     activate();
 }
 
-export function triggerSetEntry() {
-    handleSetEntryFromFocus();
+export function triggerSetEntry(event, actionContext) {
+    handleDefineEntryPoint(actionContext);
 }
 
-export function triggerRestoreEntry() {
-    handleMove(restoreEntryNode, 'Retour au point d’entrée', 'Aucun point d’entrée défini');
+export function triggerRestoreEntry(event, actionContext) {
+    handleMove(restoreEntryNode, 'Retour au point d’entrée', 'Aucun point d’entrée défini', actionContext);
 }
 
-export function triggerMoveParent() {
-    handleMove(moveToParent, 'Nœud parent', 'Aucun nœud parent');
+export function triggerMoveParent(event, actionContext) {
+    handleMove(moveToParent, 'Nœud parent', 'Aucun nœud parent', actionContext);
 }
 
-export function triggerMoveChild() {
-    handleMove(moveToFirstChild, 'Premier enfant', 'Aucun enfant');
+export function triggerMoveChild(event, actionContext) {
+    handleMove(moveToFirstChild, 'Premier enfant', 'Aucun enfant', actionContext);
 }
 
-export function triggerMovePrevious() {
-    handleMove(moveToPreviousSibling, 'Frère précédent', 'Aucun frère précédent');
+export function triggerMovePrevious(event, actionContext) {
+    handleMove(moveToPreviousSibling, 'Frère précédent', 'Aucun frère précédent', actionContext);
 }
 
-export function triggerMoveNext() {
-    handleMove(moveToNextSibling, 'Frère suivant', 'Aucun frère suivant');
+export function triggerMoveNext(event, actionContext) {
+    handleMove(moveToNextSibling, 'Frère suivant', 'Aucun frère suivant', actionContext);
 }
 
-export function triggerMoveFirst() {
-    handleMove(moveToFirstSibling, 'Premier frère', 'Aucun premier frère');
+export function triggerMoveFirst(event, actionContext) {
+    handleMove(moveToFirstSibling, 'Premier frère', 'Aucun premier frère', actionContext);
 }
 
-export function triggerMoveLast() {
-    handleMove(moveToLastSibling, 'Dernier frère', 'Aucun dernier frère');
+export function triggerMoveLast(event, actionContext) {
+    handleMove(moveToLastSibling, 'Dernier frère', 'Aucun dernier frère', actionContext);
 }
 
-export function triggerHighlightToggle() {
+export function triggerHighlightToggle(event, actionContext) {
     if (!getIsActive()) {
         announce('NodeScope est désactivé');
         return;
     }
 
-    const enabled = toggleHighlightEnabled();
+    const enabled = toggleHighlightEnabled(actionContext);
 
     if (enabled) {
         playSingleBeep();
@@ -833,8 +875,8 @@ export function triggerHighlightToggle() {
     }
 }
 
-export function triggerCopy() {
-    copyCurrentNodeAnalysis();
+export function triggerCopy(event, actionContext) {
+    copyCurrentNodeAnalysis(actionContext);
 }
 
 export const nodeScopeUiModule = {
@@ -856,11 +898,6 @@ export const nodeScopeUiModule = {
 
     onActivate() {
         createNodeScopeInterface();
-
-        const state = getNodeScopeState();
-        if (!state.entryNode || !state.currentNode) {
-            initializeNodeScopeFromFocus();
-        }
 
         playSingleBeep();
         syncNodeScopeInterface();

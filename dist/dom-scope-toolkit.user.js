@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dom Scope Toolkit
 // @namespace    https://github.com/johan-senn/dom-scope-toolkit
-// @version      0.10
+// @version      0.11
 // @description  Exploration DOM accessible clavier (NodeScope)
 // @author       Johan Senn
 // @match        *://*/*
